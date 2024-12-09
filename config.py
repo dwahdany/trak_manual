@@ -44,6 +44,7 @@ class Config:
     worker_total: int = 20
     dry_run: bool = False
     debug: bool = False
+    output_dir: str = "outputs"
     seed: int = 42  # for sampling the constrastive samples, and projector
     proj_dim: int = 2048
     num_contrastive_samples: int = 500  # 0000
