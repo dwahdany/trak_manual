@@ -2,8 +2,6 @@ import logging
 from typing import Iterable, Optional, Union
 
 import torch
-import torch.utils.checkpoint as checkpoint
-
 from trak.gradient_computers import (
     AbstractGradientComputer,
     FunctionalGradientComputer,
@@ -93,41 +91,6 @@ class Featurizer(TRAKer):
             device=self.device,
             grad_wrt=self.grad_wrt,
         )
-
-        # Enable memory efficient attention if using a transformer model
-        torch.backends.cuda.enable_mem_efficient_sdp(True)
-
-        # Apply manual checkpointing to specific layers
-        self._enable_manual_checkpointing(model)
-
-    def _enable_manual_checkpointing(self, model):
-        """Enable gradient checkpointing for specific model parts"""
-
-        if hasattr(model, "encoder"):
-            # Checkpoint transformer layers
-            for i in range(len(model.encoder.layer)):
-                layer = model.encoder.layer[i]
-
-                # Checkpoint attention
-                if hasattr(layer, "attention"):
-                    layer.attention = checkpoint.checkpoint_wrapper(
-                        layer.attention
-                    )
-
-                # Checkpoint intermediate/output
-                if hasattr(layer, "intermediate"):
-                    layer.intermediate = checkpoint.checkpoint_wrapper(
-                        layer.intermediate
-                    )
-                    layer.output = checkpoint.checkpoint_wrapper(layer.output)
-
-    def _checkpointed_forward(self, module, *args, **kwargs):
-        """Helper method for custom checkpointing logic"""
-
-        def custom_forward(*inputs):
-            return module(*inputs)
-
-        return checkpoint.checkpoint(custom_forward, *args, **kwargs)
 
     def featurize(self, batch):
         with ch.amp.autocast(device_type="cuda", dtype=torch.float16):
