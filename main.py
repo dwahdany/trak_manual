@@ -1,10 +1,12 @@
 import gc
 import json
 import logging
+import os
 from typing import Dict, List, Optional
 
 import hydra
-import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import torch
 from compute_grads import Featurizer
 from config import EncoderConfig, register_configs
@@ -79,14 +81,16 @@ def process_combination(
         batch_size=encoder_cfg.embedding_batch_size,
         size=cfg.num_contrastive_samples,
         embedding_dim=512,
-        # preprocess_fn_img=lambda x: preprocess_val(x).to(device).unsqueeze(0),
-        # preprocess_fn_txt=lambda x: tokenizer(x[0]).to(device),
         preprocess_fn_img=lambda x: x.to("cuda").to(torch.float16),
         preprocess_fn_txt=lambda x: x.to("cuda"),
     )
+
     del model
     gc.collect()
     torch.cuda.empty_cache()
+
+    output_path = f"{cfg.output_dir}/{encoder_cfg.name}/{encoder_cfg.ood_dataset_name}/grads_{subworker_id}.parquet"
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     data = give_dataset(
         cfg,
@@ -97,25 +101,48 @@ def process_combination(
         preprocess_val,
         encoder_cfg.grad_batch_size,
     )
+
+    schema = pa.schema(
+        [
+            ("uid", pa.string()),
+            ("grads", pa.list_(pa.float16(), cfg.proj_dim)),
+            ("loss_grads", pa.float32()),
+        ]
+    )
+
+    metadata = {
+        "grads_shape": str(cfg.proj_dim),
+    }
+
+    if not os.path.exists(output_path):
+        table = pa.Table.from_pydict(
+            {"uid": [], "grads": [], "loss_grads": []}, schema=schema
+        ).replace_schema_metadata(metadata)
+        pq.write_table(table, output_path)
+
     for img, txt, metadata in tqdm(data):
-        print("img.dtype", img.dtype, "txt.dtype", txt.dtype)
-        print("img.shape", img.shape, "txt.shape", txt.shape)
         uids = [m["uid"] for m in metadata]
 
         img = img.to("cuda").to(torch.float16)
         txt = txt.to("cuda")
 
         grads, loss_grads = featurizer.featurize((img, txt))
-        print(grads.shape, loss_grads.shape)
-        print(len(uids))
-        print(uids)
-        # save in a table:
-        # uid, grads, loss_grads
-        output_path = f"{cfg.output_dir}/{encoder_cfg.name}/{encoder_cfg.ood_dataset_name}/grads_{subworker_id}.parquet"
-        df = pd.DataFrame(
-            {"uid": uids, "grads": grads, "loss_grads": loss_grads}
-        )
-        df.to_parquet(output_path)
+
+        batch_data = {
+            "uid": uids,
+            "grads": [row.astype("float16") for row in grads.cpu().numpy()],
+            "loss_grads": loss_grads.cpu().numpy().astype("float32"),
+        }
+        batch_table = pa.Table.from_pydict(batch_data, schema=schema)
+
+        if os.path.exists(output_path):
+            with pq.ParquetWriter(output_path, schema=schema) as writer:
+                writer.write_table(batch_table)
+        else:
+            pq.write_table(batch_table, output_path, compression="snappy")
+
+        # del grads, loss_grads, batch_data, batch_table
+        # torch.cuda.empty_cache()
 
 
 def get_worker_assignments(
