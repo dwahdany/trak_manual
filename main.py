@@ -71,6 +71,7 @@ def process_combination(
         model_id=encoder_cfg.model_id,
         use_half_precision=True,
         projector_seed=cfg.seed,
+        proj_max_batch_size=encoder_cfg.grad_batch_size,
     )
     featurizer.task.get_embeddings(
         model,
