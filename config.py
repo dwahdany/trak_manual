@@ -28,8 +28,8 @@ class EncoderConfig:
     ood_dataset_name: str = "commonpool"
     id_dataset_name: Optional[str] = None
     precision: str = "pure_fp16"  # "amp"
-    embedding_batch_size: int = 2048
-    grad_batch_size: int = 2
+    embedding_batch_size: int = 2_048
+    grad_batch_size: int = 48
     model_id: int = 0
 
     def __post_init__(self):
@@ -47,7 +47,7 @@ class Config:
     output_dir: str = "outputs"
     seed: int = 42  # for sampling the constrastive samples, and projector
     proj_dim: int = 2048
-    num_contrastive_samples: int = 500  # 0000
+    num_contrastive_samples: int = 50_000
     datasets: Dict[str, DatasetConfig] = field(
         default_factory=lambda: {
             "commonpool": DatasetConfig(
