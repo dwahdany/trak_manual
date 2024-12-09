@@ -4,6 +4,7 @@ import logging
 from typing import Dict, List, Optional
 
 import hydra
+import pandas as pd
 import torch
 from compute_grads import Featurizer
 from config import EncoderConfig, register_configs
@@ -107,7 +108,13 @@ def process_combination(
         print(grads.shape, loss_grads.shape)
         print(len(uids))
         print(uids)
-        # break
+        # save in a table:
+        # uid, grads, loss_grads
+        output_path = f"{cfg.output_dir}/{encoder_cfg.name}/{encoder_cfg.ood_dataset_name}/grads_{subworker_id}.parquet"
+        df = pd.DataFrame(
+            {"uid": uids, "grads": grads, "loss_grads": loss_grads}
+        )
+        df.to_parquet(output_path)
 
 
 def get_worker_assignments(
