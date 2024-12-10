@@ -5,13 +5,11 @@ import numpy as np
 import webdataset as wds
 import zarr
 from torch.utils.data import IterableDataset
-
 from training.data import (
     ResampledShards2,
     expand_urls,
     filter_no_caption_or_no_image,
     log_and_continue,
-    tarfile_to_samples_nothrow,
 )
 
 
@@ -130,9 +128,9 @@ def give_dataset(
     tokenizer,
     preprocess_val,
     batch_size,
+    existing_uids=None,
 ):
     dataset_cfg = cfg.datasets[dataset_name]
-    print(dataset_cfg)
     shards, num_samples = give_worker_shards(
         dataset_cfg_to_shards(dataset_cfg), worker_id, worker_total
     )
@@ -141,8 +139,22 @@ def give_dataset(
     pipeline.extend(
         [
             wds.split_by_worker,
-            tarfile_to_samples_nothrow,
+            # tarfile_to_samples_nothrow,
+            wds.tarfile_to_samples(handler=log_and_continue),
             wds.decode("pilrgb", handler=log_and_continue),
+        ]
+    )
+    if existing_uids is not None:
+
+        def ood_filter(sample):
+            print(sample)
+            uid = sample["json"]["uid"]
+            return uid not in existing_uids
+
+        pipeline.extend([wds.select(ood_filter)])
+
+    pipeline.extend(
+        [
             wds.rename(image="jpg;png;jpeg;webp", text="txt"),
             wds.map_dict(
                 image=preprocess_val,
