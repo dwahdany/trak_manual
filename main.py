@@ -98,16 +98,6 @@ def process_combination(
     output_path = f"{cfg.output_dir}/{encoder_cfg.name}/{encoder_cfg.ood_dataset_name}/grads_{subworker_id}.parquet"
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-    data = give_dataset(
-        cfg,
-        encoder_cfg.ood_dataset_name,
-        subworker_id,
-        subworker_total,
-        tokenizer,
-        preprocess_val,
-        encoder_cfg.grad_batch_size,
-    )
-
     schema = pa.schema(
         [
             ("uid", pa.string()),
@@ -116,18 +106,35 @@ def process_combination(
         ]
     )
 
+    # Just check for existing UIDs if file exists
+    existing_uids = set()
+    if os.path.exists(output_path):
+        table = pq.read_table(output_path)
+        existing_uids.update(table["uid"].to_pylist())
+
+    print(f"Existing uids: {len(existing_uids)}")
+
+    # Buffer for accumulating batches
+    accumulated_tables = []
+    write_interval = 100  # Configure this in your hydra config if needed
+
     metadata = {
         "grads_shape": str(cfg.proj_dim),
     }
 
-    if not os.path.exists(output_path):
-        table = pa.Table.from_pydict(
-            {"uid": [], "grads": [], "loss_grads": []}, schema=schema
-        ).replace_schema_metadata(metadata)
-        pq.write_table(table, output_path)
+    data = give_dataset(
+        cfg,
+        encoder_cfg.ood_dataset_name,
+        subworker_id,
+        subworker_total,
+        tokenizer,
+        preprocess_val,
+        encoder_cfg.grad_batch_size,
+        existing_uids=existing_uids,
+    )
 
-    for img, txt, metadata in tqdm(data):
-        uids = [m["uid"] for m in metadata]
+    for batch_idx, (img, txt, metadata_batch) in enumerate(tqdm(data)):
+        uids = [m["uid"] for m in metadata_batch]
 
         img = img.to("cuda").to(torch.float16)
         txt = txt.to("cuda")
@@ -140,15 +147,32 @@ def process_combination(
             "loss_grads": loss_grads.cpu().numpy().astype("float32"),
         }
         batch_table = pa.Table.from_pydict(batch_data, schema=schema)
+        accumulated_tables.append(batch_table)
 
+        # Write accumulated data at intervals
+        if (batch_idx + 1) % write_interval == 0:
+            if os.path.exists(output_path):
+                existing_table = pq.read_table(output_path)
+                combined_table = pa.concat_tables(
+                    [existing_table] + accumulated_tables
+                )
+            else:
+                combined_table = pa.concat_tables(accumulated_tables)
+            combined_table = combined_table.replace_schema_metadata(metadata)
+            pq.write_table(combined_table, output_path)
+            accumulated_tables = []  # Clear the buffer
+
+    # Write any remaining data
+    if accumulated_tables:
         if os.path.exists(output_path):
-            with pq.ParquetWriter(output_path, schema=schema) as writer:
-                writer.write_table(batch_table)
+            existing_table = pq.read_table(output_path)
+            combined_table = pa.concat_tables(
+                [existing_table] + accumulated_tables
+            )
         else:
-            pq.write_table(batch_table, output_path, compression="snappy")
-
-        # del grads, loss_grads, batch_data, batch_table
-        # torch.cuda.empty_cache()
+            combined_table = pa.concat_tables(accumulated_tables)
+        combined_table = combined_table.replace_schema_metadata(metadata)
+        pq.write_table(combined_table, output_path)
 
 
 def get_worker_assignments(
