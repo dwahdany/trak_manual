@@ -77,7 +77,13 @@ def process_combination(
     )
     featurizer.task.get_embeddings(
         model,
-        embeddings_dataset,
+        tqdm(
+            embeddings_dataset,
+            desc="Computing embeddings",
+            total=cfg.num_contrastive_samples
+            // encoder_cfg.embedding_batch_size
+            + 1,
+        ),
         batch_size=encoder_cfg.embedding_batch_size,
         size=cfg.num_contrastive_samples,
         embedding_dim=512,
