@@ -147,7 +147,6 @@ def give_dataset(
     if existing_uids is not None:
 
         def ood_filter(sample):
-            print(sample)
             uid = sample["json"]["uid"]
             return uid not in existing_uids
 

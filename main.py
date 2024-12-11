@@ -2,6 +2,7 @@ import gc
 import json
 import logging
 import os
+import time
 from typing import Dict, List, Optional
 
 import hydra
@@ -159,7 +160,11 @@ def process_combination(
             else:
                 combined_table = pa.concat_tables(accumulated_tables)
             combined_table = combined_table.replace_schema_metadata(metadata)
+            t = time.time()
             pq.write_table(combined_table, output_path)
+            print(
+                f"Wrote {len(accumulated_tables)} results in {time.time() - t} seconds"
+            )
             accumulated_tables = []  # Clear the buffer
 
     # Write any remaining data
@@ -172,7 +177,11 @@ def process_combination(
         else:
             combined_table = pa.concat_tables(accumulated_tables)
         combined_table = combined_table.replace_schema_metadata(metadata)
+        t = time.time()
         pq.write_table(combined_table, output_path)
+        print(
+            f"Wrote {len(accumulated_tables)} results in {time.time() - t} seconds"
+        )
 
 
 def get_worker_assignments(
