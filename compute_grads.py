@@ -101,7 +101,10 @@ class Featurizer(TRAKer):
                 grads = self.projector.project(grads, model_id=self.model_id)
                 grads /= self.normalize_factor
                 loss_grads = self.gradient_computer.compute_loss_grad(batch)
-        return grads, loss_grads
+                loss = self.task.get_output(
+                    self.model, self.weights, self.buffers, batch
+                )
+        return grads, loss_grads, loss
 
     def load_checkpoint(self, *args, **kwargs):
         raise NotImplementedError()

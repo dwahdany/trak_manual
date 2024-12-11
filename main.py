@@ -106,6 +106,7 @@ def process_combination(
             ("uid", pa.string()),
             ("grads", pa.list_(pa.float16(), cfg.proj_dim)),
             ("loss_grads", pa.float32()),
+            ("loss", pa.float32()),
         ]
     )
 
@@ -146,12 +147,13 @@ def process_combination(
         img = img.to("cuda").to(torch.float16)
         txt = txt.to("cuda")
 
-        grads, loss_grads = featurizer.featurize((img, txt))
+        grads, loss_grads, loss = featurizer.featurize((img, txt))
 
         batch_data = {
             "uid": uids,
             "grads": [row.astype("float16") for row in grads.cpu().numpy()],
             "loss_grads": loss_grads.cpu().numpy().astype("float32"),
+            "loss": loss.cpu().numpy().astype("float32"),
         }
         batch_table = pa.Table.from_pydict(batch_data, schema=schema)
         accumulated_tables.append(batch_table)
