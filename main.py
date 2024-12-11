@@ -2,11 +2,11 @@ import gc
 import json
 import logging
 import os
-import time
 from typing import Dict, List, Optional
 
 import hydra
 import pyarrow as pa
+import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 import torch
 from compute_grads import Featurizer
@@ -96,8 +96,10 @@ def process_combination(
     gc.collect()
     torch.cuda.empty_cache()
 
-    output_path = f"{cfg.output_dir}/{encoder_cfg.name}/{encoder_cfg.ood_dataset_name}/grads_{subworker_id}.parquet"
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    output_base_path = (
+        f"{cfg.output_dir}/{encoder_cfg.name}/{encoder_cfg.ood_dataset_name}"
+    )
+    os.makedirs(output_base_path, exist_ok=True)
 
     schema = pa.schema(
         [
@@ -107,17 +109,18 @@ def process_combination(
         ]
     )
 
-    # Just check for existing UIDs if file exists
+    # Check for existing UIDs across all partitions
     existing_uids = set()
-    if os.path.exists(output_path):
-        table = pq.read_table(output_path)
-        existing_uids.update(table["uid"].to_pylist())
+    if os.path.exists(output_base_path):
+        dataset = ds.dataset(output_base_path, format="parquet")
+        for batch in dataset.scanner().to_batches():
+            existing_uids.update(batch["uid"].to_pylist())
 
     print(f"Existing uids: {len(existing_uids)}")
 
     # Buffer for accumulating batches
     accumulated_tables = []
-    write_interval = 100  # Configure this in your hydra config if needed
+    write_interval = cfg.write_chunks
 
     metadata = {
         "grads_shape": str(cfg.proj_dim),
@@ -133,6 +136,9 @@ def process_combination(
         encoder_cfg.grad_batch_size,
         existing_uids=existing_uids,
     )
+
+    partition_base_name = f"part_{subworker_id}"
+    current_partition = 0
 
     for batch_idx, (img, txt, metadata_batch) in enumerate(tqdm(data)):
         uids = [m["uid"] for m in metadata_batch]
@@ -152,35 +158,30 @@ def process_combination(
 
         # Write accumulated data at intervals
         if (batch_idx + 1) % write_interval == 0:
-            if os.path.exists(output_path):
-                existing_table = pq.read_table(output_path)
-                combined_table = pa.concat_tables(
-                    [existing_table] + accumulated_tables
-                )
-            else:
+            if accumulated_tables:
                 combined_table = pa.concat_tables(accumulated_tables)
-            combined_table = combined_table.replace_schema_metadata(metadata)
-            t = time.time()
-            pq.write_table(combined_table, output_path)
-            print(
-                f"Wrote {len(accumulated_tables)} results in {time.time() - t} seconds"
-            )
-            accumulated_tables = []  # Clear the buffer
+                combined_table = combined_table.replace_schema_metadata(
+                    metadata
+                )
+
+                output_path = f"{output_base_path}/{partition_base_name}_{current_partition}.parquet"
+                pq.write_table(combined_table, output_path)
+                print(
+                    f"Wrote partition {current_partition} with {len(accumulated_tables)} batches"
+                )
+
+                current_partition += 1
+                accumulated_tables = []
 
     # Write any remaining data
     if accumulated_tables:
-        if os.path.exists(output_path):
-            existing_table = pq.read_table(output_path)
-            combined_table = pa.concat_tables(
-                [existing_table] + accumulated_tables
-            )
-        else:
-            combined_table = pa.concat_tables(accumulated_tables)
+        combined_table = pa.concat_tables(accumulated_tables)
         combined_table = combined_table.replace_schema_metadata(metadata)
-        t = time.time()
+
+        output_path = f"{output_base_path}/{partition_base_name}_{current_partition}.parquet"
         pq.write_table(combined_table, output_path)
         print(
-            f"Wrote {len(accumulated_tables)} results in {time.time() - t} seconds"
+            f"Wrote final partition {current_partition} with {len(accumulated_tables)} batches"
         )
 
 
