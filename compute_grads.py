@@ -1,4 +1,5 @@
 import logging
+from functools import partial
 from typing import Iterable, Optional, Union
 
 import torch
@@ -92,6 +93,33 @@ class Featurizer(TRAKer):
             grad_wrt=self.grad_wrt,
         )
 
+    def get_losses(self, image, label):
+        all_im_embs = self.task.image_embeddings
+        all_txt_embs = self.task.text_embeddings
+        N = self.task.num_computed_embeddings
+        sim_bs = self.task.sim_batch_size
+
+        clip_inputs = {"image": image.unsqueeze(0), "text": label.unsqueeze(0)}
+        image_embeddings, text_embeddings, _ = ch.func.functional_call(
+            self.model,
+            (
+                self.gradient_computer.func_weights,
+                self.gradient_computer.func_buffers,
+            ),
+            args=(),
+            kwargs=clip_inputs,
+        )
+        ii = ch.multinomial(
+            input=ch.arange(N).float(), num_samples=sim_bs, replacement=False
+        )
+        loss_img = -ch.logsumexp(
+            -image_embeddings @ (text_embeddings - all_txt_embs[ii]).T, dim=1
+        ).squeeze()
+        loss_txt = -ch.logsumexp(
+            -text_embeddings @ (image_embeddings - all_im_embs[ii]).T, dim=1
+        ).squeeze()
+        return loss_img, loss_txt
+
     def featurize(self, batch):
         with ch.amp.autocast(device_type="cuda", dtype=torch.float16):
             with ch.no_grad():
@@ -101,10 +129,24 @@ class Featurizer(TRAKer):
                 grads = self.projector.project(grads, model_id=self.model_id)
                 grads /= self.normalize_factor
                 loss_grads = self.gradient_computer.compute_loss_grad(batch)
-                loss = self.task.get_output(
-                    self.model, self.weights, self.buffers, batch
+                # loss_img, loss_txt = torch.vmap(
+                #     partial(self.task.get_output, separate_loss=True),
+                #     in_dims=(None, None, None, *([0] * len(batch))),
+                #     randomness="different",
+                # )(
+                #     self.gradient_computer.model,
+                #     self.gradient_computer.func_weights,
+                #     self.gradient_computer.func_buffers,
+                #     *batch,
+                # )
+                loss_img, loss_txt = torch.vmap(
+                    partial(self.get_losses),
+                    in_dims=tuple([0] * len(batch)),
+                    randomness="different",
+                )(
+                    *batch,
                 )
-        return grads, loss_grads, loss
+        return grads, loss_grads, loss_img, loss_txt
 
     def load_checkpoint(self, *args, **kwargs):
         raise NotImplementedError()
