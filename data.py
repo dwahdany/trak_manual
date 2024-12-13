@@ -89,7 +89,7 @@ def give_worker_shards(
 
     # Calculate target samples per worker
     target_per_worker = total_samples / worker_total
-    print(target_per_worker)
+    print("trying to give each worker", target_per_worker, "samples")
 
     # Find which shards belong to this worker
     worker_start = target_per_worker * worker_id
@@ -99,8 +99,10 @@ def give_worker_shards(
     start_shard = next(i for i, c in enumerate(cumsum) if c > worker_start)
     end_shard = next(i for i, c in enumerate(cumsum) if c >= worker_end)
 
-    print(start_shard, end_shard)
-    print(cumsum[end_shard] - cumsum[start_shard])
+    print(f"Giving worker {worker_id} shards {start_shard} to {end_shard}")
+    print(
+        f"Giving worker {worker_id} {cumsum[end_shard] - cumsum[start_shard]} samples"
+    )
     return shards[start_shard : end_shard + 1], cumsum[end_shard] - cumsum[
         start_shard
     ]
