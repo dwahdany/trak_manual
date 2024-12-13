@@ -3,6 +3,7 @@ import json
 import logging
 import os
 from typing import Dict, List, Optional
+import uuid
 
 import hydra
 import pyarrow as pa
@@ -173,7 +174,7 @@ def process_combination(
                     metadata
                 )
 
-                output_path = f"{output_base_path}/{partition_base_name}_{current_partition}.parquet"
+                output_path = f"{output_base_path}/{partition_base_name}_{current_partition}_{uuid.uuid4()}.parquet"
                 pq.write_table(combined_table, output_path)
                 print(
                     f"Wrote partition {current_partition} with {len(accumulated_tables)} batches"
