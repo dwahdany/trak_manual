@@ -210,8 +210,8 @@ def get_worker_assignments(
 
     assignments = []
     for i, encoder_cfg in enumerate(encoders):
-        if (
-            i % worker_total == worker_id % subworker_total
+        if i % worker_total == worker_id % len(
+            encoders
         ):  # should we work on this encoder?
             subworker_id = worker_id // len(
                 encoders
