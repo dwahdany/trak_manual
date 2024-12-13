@@ -143,7 +143,9 @@ def process_combination(
     partition_base_name = f"part_{subworker_id}"
     current_partition = 0
 
-    for batch_idx, (img, txt, metadata_batch) in enumerate(tqdm(data)):
+    for batch_idx, (img, txt, metadata_batch) in enumerate(
+        tqdm(data, total=data.num_batches)
+    ):
         uids = [m["uid"] for m in metadata_batch]
 
         img = img.to("cuda").to(torch.float16)
