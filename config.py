@@ -44,7 +44,8 @@ class Config:
     worker_total: int = 20
     dry_run: bool = False
     debug: bool = False
-    output_dir: str = "outputs"
+    output_dir: str = "/raid/pdpl/trak/grads/"
+    save_dir: str = "/raid/pdpl/trak/trak_results/"
     write_chunks: int = 1000  # number of samples per output chunk
     seed: int = 42  # for sampling the constrastive samples, and projector
     proj_dim: int = 2048

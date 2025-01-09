@@ -1,3 +1,4 @@
 # based on docker image nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
 # tested using cpython 3.12
 clang
+# on cuda runtime you need nvidia-cuda-dev
