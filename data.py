@@ -77,7 +77,6 @@ def give_worker_shards(
     worker_id,
     worker_total,
 ):
-    # load the list of all UIDs
     metadata_files = [shard.replace(".tar", "_stats.json") for shard in shards]
     shard_file_counts = [
         json.load(open(metadata_file, "r"))["successes"]
@@ -86,6 +85,12 @@ def give_worker_shards(
     # Calculate cumulative counts to help with splitting
     cumsum = np.cumsum(shard_file_counts)
     total_samples = cumsum[-1]
+
+    if worker_total == 1:
+        if worker_id == 0:
+            return shards, total_samples
+        else:
+            return [], 0
 
     # Calculate target samples per worker
     target_per_worker = total_samples / worker_total
@@ -133,29 +138,61 @@ def give_dataset(
     existing_uids=None,
 ):
     dataset_cfg = cfg.datasets[dataset_name]
-    shards, num_samples = give_worker_shards(
-        dataset_cfg_to_shards(dataset_cfg), worker_id, worker_total
-    )
-    dataset = wds.SimpleShardList(shards)
+    if not dataset_cfg.splittable:
+        if worker_id > 0:
+            return None
+        shards, num_samples = give_worker_shards(
+            dataset_cfg_to_shards(dataset_cfg), 0, 1
+        )  # use just one worker
+        dataset, num_samples, id_filter, label_map = give_custom_dataset(
+            cfg, dataset_name
+        )
+    else:
+        shards, num_samples = give_worker_shards(
+            dataset_cfg_to_shards(dataset_cfg), worker_id, worker_total
+        )
+        dataset = wds.SimpleShardList(shards)
     pipeline = [dataset]
     pipeline.extend(
         [
             wds.split_by_worker,
-            # tarfile_to_samples_nothrow,
             wds.tarfile_to_samples(handler=log_and_continue),
             wds.decode("pilrgb", handler=log_and_continue),
+            wds.map(
+                lambda sample: {
+                    **sample,
+                    "json": {
+                        **sample["json"],
+                        "uid": str(sample["json"].get("id")),
+                    }
+                    if "id" in sample["json"]
+                    else sample["json"],
+                }
+            ),
         ]
     )
     if existing_uids is not None:
 
         def ood_filter(sample):
-            uid = sample["json"]["uid"]
-            return uid not in existing_uids
+            try:
+                uid = sample["json"]["uid"]
+                return uid not in existing_uids
+            except KeyError as e:
+                print(f"Didnt find uid in {sample}")
+                raise e
 
         pipeline.extend([wds.select(ood_filter)])
 
     pipeline.extend(
         [
+            wds.map(
+                lambda sample: {
+                    **sample,
+                    "txt": label_map(sample["label"])
+                    if "txt" not in sample
+                    else sample["txt"],
+                }
+            ),
             wds.rename(image="jpg;png;jpeg;webp", text="txt"),
             wds.map_dict(
                 image=preprocess_val,
@@ -180,6 +217,75 @@ def give_dataset(
     return dataloader
 
 
+def give_custom_dataset(cfg, id_dataset_name):
+    id_dataset_cfg = cfg.datasets[id_dataset_name]
+    id_dataset = ResampledShards2(
+        id_dataset_cfg.uri,
+        deterministic=True,  # worker_seed=cfg.seed
+    )
+    if "fairvision/Glaucoma" in id_dataset_name:
+        task = "fairvision/glaucoma"
+    elif "fairvision/AMD" in id_dataset_name:
+        task = "fairvision/amd"
+    elif "fairvision/DR" in id_dataset_name:
+        task = "fairvision/dr"
+    elif "fitzpatrick17k" in id_dataset_name:
+        task = "fitzpatrick17k"
+    elif "pcam" in id_dataset_name:
+        task = "pcam"
+    else:
+        raise ValueError(f"Unknown task: {id_dataset_name}")
+    class_names = {
+        "diabetic_retinopathy": [
+            "no diabetic retinopathy",
+            "mild diabetic retinopathy",
+            "moderate diabetic retinopathy",
+            "severe diabetic retinopathy",
+            "proliferative diabetic retinopathy",
+        ],
+        "fairvision/amd": [
+            "no age-related macular degeneration",
+            "early age-related macular degeneration",
+            "intermediate age-related macular degeneration",
+            "late age-related macular degeneration",
+        ],
+        "fairvision/dr": [
+            "no vision threatening diabetic retinopathy",
+            "vision threatening diabetic retinopathy",
+        ],
+        "fairvision/glaucoma": ["without glaucoma", "with glaucoma"],
+        "fitzpatrick17k": [
+            "benign lesion",
+            "malignant lesion",
+            "non-neoplastic condition",
+        ],
+        "pcam": [
+            "a histopathology slide showing lymph node",
+            "histopathology image of lymph node containing metastatic tumor tissue",
+        ],
+    }
+    templates = {
+        "diabetic_retinopathy": ["a retinal image with {c}."],
+        "fairvision/amd": ["a retinal image with {c}."],
+        "fairvision/dr": ["a retinal image with {c}."],
+        "fairvision/glaucoma": ["a retinal image {c}."],
+        "fitzpatrick17k": ["a skin image showing a {c}."],
+        "pcam": ["{c}."],
+    }
+
+    def label_map(label):
+        return templates[task][0].format(c=class_names[task][int(label)])
+
+    id_zarr = zarr.open("/raid/pdpl/id_downstream_idx.zarr", mode="r")
+    id_uids = set(id_zarr[task]["id_indices"])
+
+    def id_filter(sample):
+        return sample["__key__"] in id_uids
+
+    indistribution_data_num_samples = len(id_uids)
+    return id_dataset, indistribution_data_num_samples, id_filter, label_map
+
+
 def give_embedding_dataset(
     cfg,
     dataset_name,
@@ -194,71 +300,9 @@ def give_embedding_dataset(
         deterministic=True,  # worker_seed=cfg.seed
     )  # same constrastive samples on all workers
     if id_dataset_name is not None:
-        id_dataset_cfg = cfg.datasets[id_dataset_name]
-        id_dataset = ResampledShards2(
-            id_dataset_cfg.uri,
-            deterministic=True,  # worker_seed=cfg.seed
+        id_dataset, indistribution_data_num_samples, id_filter, label_map = (
+            give_custom_dataset(cfg, id_dataset_name)
         )
-        if "fairvision/Glaucoma" in id_dataset_name:
-            task = "fairvision/glaucoma"
-        elif "fairvision/AMD" in id_dataset_name:
-            task = "fairvision/amd"
-        elif "fairvision/DR" in id_dataset_name:
-            task = "fairvision/dr"
-        elif "fitzpatrick17k" in id_dataset_name:
-            task = "fitzpatrick17k"
-        elif "pcam" in id_dataset_name:
-            task = "pcam"
-        else:
-            raise ValueError(f"Unknown task: {id_dataset_name}")
-        class_names = {
-            "diabetic_retinopathy": [
-                "no diabetic retinopathy",
-                "mild diabetic retinopathy",
-                "moderate diabetic retinopathy",
-                "severe diabetic retinopathy",
-                "proliferative diabetic retinopathy",
-            ],
-            "fairvision/amd": [
-                "no age-related macular degeneration",
-                "early age-related macular degeneration",
-                "intermediate age-related macular degeneration",
-                "late age-related macular degeneration",
-            ],
-            "fairvision/dr": [
-                "no vision threatening diabetic retinopathy",
-                "vision threatening diabetic retinopathy",
-            ],
-            "fairvision/glaucoma": ["without glaucoma", "with glaucoma"],
-            "fitzpatrick17k": [
-                "benign lesion",
-                "malignant lesion",
-                "non-neoplastic condition",
-            ],
-            "pcam": [
-                "a histopathology slide showing lymph node",
-                "histopathology image of lymph node containing metastatic tumor tissue",
-            ],
-        }
-        templates = {
-            "diabetic_retinopathy": ["a retinal image with {c}."],
-            "fairvision/amd": ["a retinal image with {c}."],
-            "fairvision/dr": ["a retinal image with {c}."],
-            "fairvision/glaucoma": ["a retinal image {c}."],
-            "fitzpatrick17k": ["a skin image showing a {c}."],
-            "pcam": ["{c}."],
-        }
-
-        def label_map(label):
-            return templates[task][0].format(c=class_names[task][int(label)])
-
-        id_zarr = zarr.open("/raid/pdpl/id_downstream_idx.zarr", mode="r")
-        id_uids = set(id_zarr[task]["id_indices"])
-
-        def id_filter(sample):
-            return sample["__key__"] in id_uids
-
-        indistribution_data_num_samples = len(id_uids)
 
         p_id = indistribution_data_num_samples / (
             indistribution_data_num_samples + ood_dataset_cfg.num_samples

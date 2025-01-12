@@ -2,20 +2,21 @@ import gc
 import json
 import logging
 import os
-from typing import Dict, List, Optional
 import uuid
+from typing import Dict, List, Optional
 
 import hydra
 import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 import torch
+from omegaconf import DictConfig
+from tqdm.auto import tqdm
+
 from compute_grads import Featurizer
 from config import EncoderConfig, register_configs
 from data import give_dataset, give_embedding_dataset
 from model import Model
-from omegaconf import DictConfig
-from tqdm.auto import tqdm
 
 
 class JsonFormatter(logging.Formatter):
@@ -97,109 +98,118 @@ def process_combination(
     gc.collect()
     torch.cuda.empty_cache()
 
-    output_base_path = (
-        f"{cfg.output_dir}/{encoder_cfg.name}/{encoder_cfg.ood_dataset_name}"
-    )
-    os.makedirs(output_base_path, exist_ok=True)
-
-    schema = pa.schema(
-        [
-            ("uid", pa.string()),
-            ("grads", pa.list_(pa.float16(), cfg.proj_dim)),
-            ("loss_grads", pa.float32()),
-            ("loss", pa.float32()),
-            ("loss_img", pa.float32()),
-            ("loss_txt", pa.float32()),
-        ]
-    )
-
-    # Check for existing UIDs across all partitions
-    existing_uids = set()
-    if os.path.exists(output_base_path):
-        dataset = ds.dataset(output_base_path, format="parquet")
-        for batch in dataset.scanner().to_batches():
-            existing_uids.update(batch["uid"].to_pylist())
-
-    print(f"Existing uids: {len(existing_uids)}")
-
-    # Buffer for accumulating batches
-    accumulated_tables = []
-    write_interval = cfg.write_chunks
-
-    metadata = {
-        "grads_shape": str(cfg.proj_dim),
-    }
-
-    data = give_dataset(
-        cfg,
-        encoder_cfg.ood_dataset_name,
-        subworker_id,
-        subworker_total,
-        tokenizer,
-        preprocess_val,
-        encoder_cfg.grad_batch_size,
-        existing_uids=existing_uids,
-    )
-
-    partition_base_name = f"part_{subworker_id}"
-    current_partition = 0
-
-    for batch_idx, (img, txt, metadata_batch) in enumerate(
-        tqdm(data, total=data.num_batches)
-    ):
-        uids = [m["uid"] for m in metadata_batch]
-
-        img = img.to("cuda").to(torch.float16)
-        txt = txt.to("cuda")
-
-        grads, loss_grads, loss_img, loss_txt = featurizer.featurize(
-            (img, txt)
+    for dataset_name in encoder_cfg.target_datasets:
+        output_base_path = (
+            f"{cfg.output_dir}/{encoder_cfg.name}/{dataset_name}"
         )
-        batch_data = {
-            "uid": uids,
-            "grads": [row.astype("float16") for row in grads.cpu().numpy()],
-            "loss_grads": loss_grads.cpu().numpy().astype("float32"),
-            "loss_img": loss_img.cpu().numpy().astype("float32"),
-            "loss_txt": loss_txt.cpu().numpy().astype("float32"),
-            "loss": (loss_img + loss_txt).cpu().numpy().astype("float32"),
+        os.makedirs(output_base_path, exist_ok=True)
+
+        schema = pa.schema(
+            [
+                ("uid", pa.string()),
+                ("grads", pa.list_(pa.float16(), cfg.proj_dim)),
+                ("loss_grads", pa.float32()),
+                ("loss", pa.float32()),
+                ("loss_img", pa.float32()),
+                ("loss_txt", pa.float32()),
+            ]
+        )
+
+        # Check for existing UIDs across all partitions
+        existing_uids = set()
+        if os.path.exists(output_base_path):
+            dataset = ds.dataset(output_base_path, format="parquet")
+            for batch in dataset.scanner().to_batches():
+                existing_uids.update(batch["uid"].to_pylist())
+
+        print(f"Existing uids: {len(existing_uids)}")
+        # exit(0)
+
+        # Buffer for accumulating batches
+        accumulated_tables = []
+        write_interval = cfg.write_chunks
+
+        metadata = {
+            "grads_shape": str(cfg.proj_dim),
         }
-        batch_table = pa.Table.from_pydict(batch_data, schema=schema)
-        accumulated_tables.append(batch_table)
 
-        # Write accumulated data at intervals
-        if (batch_idx + 1) % write_interval == 0:
-            if accumulated_tables:
-                combined_table = pa.concat_tables(accumulated_tables)
-                combined_table = combined_table.replace_schema_metadata(
-                    metadata
-                )
-
-                output_path = f"{output_base_path}/{partition_base_name}_{current_partition}_{uuid.uuid4()}.parquet"
-                pq.write_table(combined_table, output_path)
-                print(
-                    f"Wrote partition {current_partition} with {len(accumulated_tables)} batches"
-                )
-
-                current_partition += 1
-                accumulated_tables = []
-
-    # Write any remaining data
-    if accumulated_tables:
-        combined_table = pa.concat_tables(accumulated_tables)
-        combined_table = combined_table.replace_schema_metadata(metadata)
-
-        output_path = f"{output_base_path}/{partition_base_name}_{current_partition}.parquet"
-        pq.write_table(combined_table, output_path)
-        print(
-            f"Wrote final partition {current_partition} with {len(accumulated_tables)} batches"
+        data = give_dataset(
+            cfg,
+            dataset_name,
+            subworker_id,
+            subworker_total,
+            tokenizer,
+            preprocess_val,
+            encoder_cfg.grad_batch_size,
+            existing_uids=existing_uids,
         )
+        if data.num_samples == 0:
+            print(f"No data for {dataset_name} and {subworker_id}")
+            continue
+        print(
+            f"Data for {dataset_name} and {subworker_id} has {data.num_samples} samples"
+        )
+
+        partition_base_name = f"part_{subworker_id}"
+        current_partition = 0
+
+        for batch_idx, (img, txt, metadata_batch) in enumerate(
+            tqdm(data, total=data.num_batches)
+        ):
+            uids = [m["uid"] for m in metadata_batch]
+
+            img = img.to("cuda").to(torch.float16)
+            txt = txt.to("cuda")
+
+            grads, loss_grads, loss_img, loss_txt = featurizer.featurize(
+                (img, txt)
+            )
+            batch_data = {
+                "uid": uids,
+                "grads": [
+                    row.astype("float16") for row in grads.cpu().numpy()
+                ],
+                "loss_grads": loss_grads.cpu().numpy().astype("float32"),
+                "loss_img": loss_img.cpu().numpy().astype("float32"),
+                "loss_txt": loss_txt.cpu().numpy().astype("float32"),
+                "loss": (loss_img + loss_txt).cpu().numpy().astype("float32"),
+            }
+            batch_table = pa.Table.from_pydict(batch_data, schema=schema)
+            accumulated_tables.append(batch_table)
+
+            # Write accumulated data at intervals
+            if (batch_idx + 1) % write_interval == 0:
+                if accumulated_tables:
+                    combined_table = pa.concat_tables(accumulated_tables)
+                    combined_table = combined_table.replace_schema_metadata(
+                        metadata
+                    )
+
+                    output_path = f"{output_base_path}/{partition_base_name}_{current_partition}_{uuid.uuid4()}.parquet"
+                    pq.write_table(combined_table, output_path)
+                    print(
+                        f"Wrote partition {current_partition} with {len(accumulated_tables)} batches"
+                    )
+
+                    current_partition += 1
+                    accumulated_tables = []
+
+        # Write any remaining data
+        if len(accumulated_tables) > 0:
+            combined_table = pa.concat_tables(accumulated_tables)
+            combined_table = combined_table.replace_schema_metadata(metadata)
+
+            output_path = f"{output_base_path}/{partition_base_name}_{current_partition}.parquet"
+            pq.write_table(combined_table, output_path)
+            print(
+                f"Wrote final partition {current_partition} with {len(accumulated_tables)} batches"
+            )
 
 
 def get_worker_assignments(
     encoders: List[EncoderConfig],
     worker_id: int,
     worker_total: int,
-    dry_run: bool = False,
 ) -> List[dict]:
     """Get all encoders that would be processed by this worker.
 
@@ -207,16 +217,22 @@ def get_worker_assignments(
         List of dicts containing assignment details
     """
     # number of workers per encoder
-    subworker_total = worker_total // len(encoders)
+    subworker_total = max(1, worker_total // len(encoders))
 
     assignments = []
     for i, encoder_cfg in enumerate(encoders):
+        print(
+            f"Encoder {i}: worker_id % len(encoders) = {worker_id % len(encoders)}"
+        )
+        print(f"Encoder {i}: i % worker_total = {i % worker_total}")
         if i % worker_total == worker_id % len(
             encoders
         ):  # should we work on this encoder?
             subworker_id = worker_id // len(
                 encoders
             )  # what is our subworker id for this encoder?
+            print(f"Encoder {i}: subworker_id = {subworker_id}")
+            print(f"Encoder {i}: subworker_total = {subworker_total}")
             if subworker_id < subworker_total:
                 assignments.append(
                     {
@@ -226,17 +242,6 @@ def get_worker_assignments(
                         "subworker_total": subworker_total,
                     }
                 )
-            # elif dry_run:
-            #     assignments.append(
-            #         {
-            #             "encoder_name": encoder_name,
-            #             "dataset_name": dataset_name,
-            #             "dropped": True,
-            #             "reason": f"Incomplete set: subworker {subworker_id} of {subworker_total}",
-            #             "num_combinations": len(combinations),
-            #         }
-            #     )
-
     print(f"Subworker got {len(assignments)} assignments")
     return assignments
 
@@ -251,7 +256,7 @@ def run_worker(
         dry_run: If True, return assignments instead of processing them
     """
     assignments = get_worker_assignments(
-        cfg.encoders, cfg.worker_id, cfg.worker_total, dry_run
+        cfg.encoders, cfg.worker_id, cfg.worker_total
     )
 
     if dry_run:
