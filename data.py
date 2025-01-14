@@ -1,10 +1,12 @@
 import json
 import math
+from typing import Optional
 
 import numpy as np
 import webdataset as wds
 import zarr
 from torch.utils.data import IterableDataset
+from torchvision.datasets import CIFAR10, CIFAR100, Food101
 from training.data import (
     ResampledShards2,
     expand_urls,
@@ -91,26 +93,45 @@ def give_worker_shards(
             return shards, total_samples
         else:
             return [], 0
+    if worker_id >= worker_total:
+        return [], 0
 
     # Calculate target samples per worker
     target_per_worker = total_samples / worker_total
-    print("trying to give each worker", target_per_worker, "samples")
+    print(f"Trying to give each worker {target_per_worker} samples")
 
-    # Find which shards belong to this worker
-    worker_start = target_per_worker * worker_id
-    worker_end = target_per_worker * (worker_id + 1)
+    if worker_id == worker_total - 1:
+        # Last worker gets all remaining shards
+        start_shard = next(
+            i
+            for i, c in enumerate(cumsum)
+            if c > worker_id * target_per_worker
+        )
+        samples = (
+            total_samples - cumsum[start_shard - 1]
+            if start_shard > 0
+            else total_samples
+        )
+        print(f"Giving last worker {worker_id} shards {start_shard} to end")
+        print(f"Giving last worker {worker_id} {samples} samples")
+        return shards[start_shard:], samples
+    else:
+        # Other workers get shards up until next worker's start
+        worker_start = target_per_worker * worker_id
+        next_worker_start = target_per_worker * (worker_id + 1)
 
-    # Find shard indices that contain the worker's samples
-    start_shard = next(i for i, c in enumerate(cumsum) if c > worker_start)
-    end_shard = next(i for i, c in enumerate(cumsum) if c >= worker_end)
+        start_shard = next(i for i, c in enumerate(cumsum) if c > worker_start)
+        end_shard = next(
+            i for i, c in enumerate(cumsum) if c > next_worker_start
+        )
 
-    print(f"Giving worker {worker_id} shards {start_shard} to {end_shard}")
-    print(
-        f"Giving worker {worker_id} {cumsum[end_shard] - cumsum[start_shard]} samples"
-    )
-    return shards[start_shard : end_shard + 1], cumsum[end_shard] - cumsum[
-        start_shard
-    ]
+        samples = cumsum[end_shard - 1] - (
+            cumsum[start_shard - 1] if start_shard > 0 else 0
+        )
+        print(f"Giving worker {worker_id} shards {start_shard} to {end_shard}")
+        print(f"Giving worker {worker_id} {samples} samples")
+
+        return shards[start_shard:end_shard], samples
 
 
 def dataset_cfg_to_shards(dataset_cfg):
@@ -144,13 +165,15 @@ def give_dataset(
         shards, num_samples = give_worker_shards(
             dataset_cfg_to_shards(dataset_cfg), 0, 1
         )  # use just one worker
-        dataset, num_samples, id_filter, label_map = give_custom_dataset(
-            cfg, dataset_name
-        )
     else:
         shards, num_samples = give_worker_shards(
             dataset_cfg_to_shards(dataset_cfg), worker_id, worker_total
         )
+    if dataset_cfg.custom:
+        dataset, id_num_samples, id_filter, label_map = give_custom_dataset(
+            cfg, dataset_name, uri=shards, resampled=False
+        )
+    else:
         dataset = wds.SimpleShardList(shards)
     pipeline = [dataset]
     pipeline.extend(
@@ -158,19 +181,24 @@ def give_dataset(
             wds.split_by_worker,
             wds.tarfile_to_samples(handler=log_and_continue),
             wds.decode("pilrgb", handler=log_and_continue),
-            wds.map(
-                lambda sample: {
-                    **sample,
-                    "json": {
-                        **sample["json"],
-                        "uid": str(sample["json"].get("id")),
-                    }
-                    if "id" in sample["json"]
-                    else sample["json"],
-                }
-            ),
         ]
     )
+    if dataset_cfg.custom:
+        pipeline.extend(
+            [
+                wds.map(
+                    lambda sample: {
+                        **sample,
+                        "json": {
+                            **sample["json"],
+                            "uid": str(sample["json"].get("id")),
+                        }
+                        if "id" in sample["json"]
+                        else sample["json"],
+                    }
+                ),
+            ]
+        )
     if existing_uids is not None:
 
         def ood_filter(sample):
@@ -217,12 +245,22 @@ def give_dataset(
     return dataloader
 
 
-def give_custom_dataset(cfg, id_dataset_name):
-    id_dataset_cfg = cfg.datasets[id_dataset_name]
-    id_dataset = ResampledShards2(
-        id_dataset_cfg.uri,
-        deterministic=True,  # worker_seed=cfg.seed
-    )
+def give_custom_dataset(
+    cfg,
+    id_dataset_name: str,
+    uri: Optional[str] = None,
+    resampled=True,
+):
+    shards = cfg.datasets[id_dataset_name].uri
+    if uri is not None:
+        shards = uri
+    if resampled:
+        id_dataset = ResampledShards2(
+            shards,
+            deterministic=True,  # worker_seed=cfg.seed
+        )
+    else:
+        id_dataset = wds.SimpleShardList(shards)
     if "fairvision/Glaucoma" in id_dataset_name:
         task = "fairvision/glaucoma"
     elif "fairvision/AMD" in id_dataset_name:
@@ -233,48 +271,32 @@ def give_custom_dataset(cfg, id_dataset_name):
         task = "fitzpatrick17k"
     elif "pcam" in id_dataset_name:
         task = "pcam"
+    elif "Food101" in id_dataset_name:
+        task = "food101"
     else:
         raise ValueError(f"Unknown task: {id_dataset_name}")
-    class_names = {
-        "diabetic_retinopathy": [
-            "no diabetic retinopathy",
-            "mild diabetic retinopathy",
-            "moderate diabetic retinopathy",
-            "severe diabetic retinopathy",
-            "proliferative diabetic retinopathy",
-        ],
-        "fairvision/amd": [
-            "no age-related macular degeneration",
-            "early age-related macular degeneration",
-            "intermediate age-related macular degeneration",
-            "late age-related macular degeneration",
-        ],
-        "fairvision/dr": [
-            "no vision threatening diabetic retinopathy",
-            "vision threatening diabetic retinopathy",
-        ],
-        "fairvision/glaucoma": ["without glaucoma", "with glaucoma"],
-        "fitzpatrick17k": [
-            "benign lesion",
-            "malignant lesion",
-            "non-neoplastic condition",
-        ],
-        "pcam": [
-            "a histopathology slide showing lymph node",
-            "histopathology image of lymph node containing metastatic tumor tissue",
-        ],
+    ds_class = {
+        "cifar10": CIFAR10,
+        "cifar100": CIFAR100,
+        "food101": Food101,
     }
-    templates = {
-        "diabetic_retinopathy": ["a retinal image with {c}."],
-        "fairvision/amd": ["a retinal image with {c}."],
-        "fairvision/dr": ["a retinal image with {c}."],
-        "fairvision/glaucoma": ["a retinal image {c}."],
-        "fitzpatrick17k": ["a skin image showing a {c}."],
-        "pcam": ["{c}."],
-    }
+    if task.lower() in ds_class.keys():
+        classnames = ds_class[task.lower()](root="/datasets").classes
+    else:
+        with open(
+            "/git/CLIP_benchmark/clip_benchmark/datasets/en_classnames.json"
+        ) as f:
+            classnames = json.load(f)[task.lower()]
+
+    with open(
+        "/git/CLIP_benchmark/clip_benchmark/datasets/en_zeroshot_classification_templates.json"
+    ) as f:
+        template = json.load(f)[task.lower()][0]
+
+    filled_templates = [template.replace("{c}", c) for c in classnames]
 
     def label_map(label):
-        return templates[task][0].format(c=class_names[task][int(label)])
+        return filled_templates[int(label)]
 
     id_zarr = zarr.open("/raid/pdpl/id_downstream_idx.zarr", mode="r")
     id_uids = set(id_zarr[task]["id_indices"])
@@ -301,7 +323,9 @@ def give_embedding_dataset(
     )  # same constrastive samples on all workers
     if id_dataset_name is not None:
         id_dataset, indistribution_data_num_samples, id_filter, label_map = (
-            give_custom_dataset(cfg, id_dataset_name)
+            give_custom_dataset(
+                cfg, id_dataset_name=id_dataset_name, resampled=True
+            )
         )
 
         p_id = indistribution_data_num_samples / (

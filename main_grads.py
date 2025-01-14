@@ -10,13 +10,12 @@ import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 import torch
-from omegaconf import DictConfig
-from tqdm.auto import tqdm
-
 from compute_grads import Featurizer
 from config import EncoderConfig, register_configs
 from data import give_dataset, give_embedding_dataset
 from model import Model
+from omegaconf import DictConfig
+from tqdm.auto import tqdm
 
 
 class JsonFormatter(logging.Formatter):
@@ -100,7 +99,7 @@ def process_combination(
 
     for dataset_name in encoder_cfg.target_datasets:
         output_base_path = (
-            f"{cfg.output_dir}/{encoder_cfg.name}/{dataset_name}"
+            f"{cfg.output_dir}/{encoder_cfg.name}/{dataset_name.lower()}"
         )
         os.makedirs(output_base_path, exist_ok=True)
 
@@ -147,7 +146,7 @@ def process_combination(
             print(f"No data for {dataset_name} and {subworker_id}")
             continue
         print(
-            f"Data for {dataset_name} and {subworker_id} has {data.num_samples} samples"
+            f"Data for {dataset_name} and {subworker_id} has {data.num_samples} samples (before filtering)"
         )
 
         partition_base_name = f"part_{subworker_id}"
@@ -179,13 +178,13 @@ def process_combination(
 
             # Write accumulated data at intervals
             if (batch_idx + 1) % write_interval == 0:
-                if accumulated_tables:
+                if len(accumulated_tables) > 0:
                     combined_table = pa.concat_tables(accumulated_tables)
                     combined_table = combined_table.replace_schema_metadata(
                         metadata
                     )
 
-                    output_path = f"{output_base_path}/{partition_base_name}_{current_partition}_{uuid.uuid4()}.parquet"
+                    output_path = f"{output_base_path}/{partition_base_name}_{current_partition}_final_{uuid.uuid4()}.parquet"
                     pq.write_table(combined_table, output_path)
                     print(
                         f"Wrote partition {current_partition} with {len(accumulated_tables)} batches"
@@ -199,7 +198,7 @@ def process_combination(
             combined_table = pa.concat_tables(accumulated_tables)
             combined_table = combined_table.replace_schema_metadata(metadata)
 
-            output_path = f"{output_base_path}/{partition_base_name}_{current_partition}.parquet"
+            output_path = f"{output_base_path}/{partition_base_name}_{current_partition}_{uuid.uuid4()}.parquet"
             pq.write_table(combined_table, output_path)
             print(
                 f"Wrote final partition {current_partition} with {len(accumulated_tables)} batches"
