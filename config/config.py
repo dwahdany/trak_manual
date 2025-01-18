@@ -141,11 +141,47 @@ class Config:
     )
     experiments: List[ExperimentConfig] = field(
         default_factory=lambda: [
-            ExperimentConfig(
-                name="raw",
-                training_datasets=["commonpool"],
-            ),
+            # ExperimentConfig(
+            #     name="raw",
+            # ),
+            create_downstream_experiment("cifar100"),
+            create_downstream_experiment("stl10"),
+            create_downstream_experiment("food101"),
+            create_downstream_experiment("fitzpatrick17k"),
+            create_downstream_experiment("pcam"),
+            create_downstream_experiment("fairvision/amd"),
+            create_downstream_experiment("fairvision/glaucoma"),
+            create_downstream_experiment("fairvision/dr"),
         ]
+    )
+
+
+def create_downstream_experiment(name: str):
+    return ExperimentConfig(
+        name=name,
+        id_dataset_name=name,
+        ood_dataset_name="commonpool",
+        target_datasets=["commonpool", name],
+        encoders=[
+            EncoderConfig(
+                name=f"{name}_v0",
+                architecture="ViT-B-32",
+                path=f"s3://pdpl/small_clip_checkpoints/curation/image-based/{name}/ratio_1.0/datacomp_v0/small_scale/checkpoints/epoch_5.pt",
+                model_id=0,
+            ),
+            EncoderConfig(
+                name=f"{name}_v1",
+                architecture="ViT-B-32",
+                path=f"s3://pdpl/small_clip_checkpoints/curation/image-based/{name}/ratio_1.0/datacomp_v1/small_scale/checkpoints/epoch_5.pt",
+                model_id=1,
+            ),
+            EncoderConfig(
+                name=f"{name}_v2",
+                architecture="ViT-B-32",
+                path=f"s3://pdpl/small_clip_checkpoints/curation/image-based/{name}/ratio_1.0/datacomp_v2/small_scale/checkpoints/epoch_5.pt",
+                model_id=2,
+            ),
+        ],
     )
 
 

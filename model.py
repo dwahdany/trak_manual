@@ -24,28 +24,26 @@ class Model:
         return Path(path)
 
     def create_model_and_transforms(self):
-        if path := self.encoder_dict.get(
-            "path"
-        ):  # Check if it's a local checkpoint
+        if path := self.cfg.get("path"):  # Check if it's a local checkpoint
             path = self._get_local_weights_path(path)
             model, preprocess_train, preprocess_val = (
                 create_model_and_transforms(
-                    self.encoder_dict["architecture"],
-                    precision=self.cfg.model.precision,
+                    self.cfg["architecture"],
+                    precision=self.cfg.precision,
                     pretrained=str(path),
                 )
             )
             if path.parts[1] == "tmp":
                 path.unlink()
-            tokenizer = get_tokenizer(self.encoder_dict["architecture"])
+            tokenizer = get_tokenizer(self.cfg["architecture"])
         else:  # Assume it's a HuggingFace hub model
             model, preprocess_train, preprocess_val = (
                 create_model_and_transforms(
-                    f"hf-hub:{self.encoder_dict['url']}",
-                    precision=self.cfg.model.precision,
+                    f"hf-hub:{self.cfg['url']}",
+                    precision=self.cfg.precision,
                 )
             )
-            tokenizer = get_tokenizer(f"hf-hub:{self.encoder_dict['url']}")
+            tokenizer = get_tokenizer(f"hf-hub:{self.cfg['url']}")
 
         model = model.to(self.cfg.device)
         return model, tokenizer, preprocess_train, preprocess_val

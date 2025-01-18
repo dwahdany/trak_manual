@@ -60,7 +60,13 @@ def process_combination(
     subworker_total: int,
 ):
     model = Model(encoder_cfg, cfg.device, cfg.s3_endpoint_url)
-    model, tokenizer, _, preprocess_val = model.create_model_and_transforms()
+    try:
+        model, tokenizer, _, preprocess_val = (
+            model.create_model_and_transforms()
+        )
+    except Exception as e:
+        print(f"Skipping {encoder_cfg.name} because of error: {e}")
+        return
     embeddings_dataset = give_embedding_dataset(
         cfg,
         experiment_cfg.ood_dataset_name,
@@ -277,7 +283,7 @@ def run_worker(
         )
 
 
-@hydra.main(version_base=None, config_name="config")
+@hydra.main(version_base=None, config_path="config", config_name="config")
 def main(cfg: DictConfig) -> None:
     """Main entry point for the application."""
     setup_logging()
