@@ -4,7 +4,7 @@ from pathlib import Path
 from pprint import pprint
 
 import pyarrow.dataset as ds
-from config import Config
+from config.config import Config
 from model import Model
 from trak import TRAKer
 

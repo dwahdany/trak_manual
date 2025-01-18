@@ -5,7 +5,7 @@ from pathlib import Path
 import hydra
 import torch
 from compute_scores import PreComputedGradients
-from config import EncoderConfig, register_configs
+from config.config import EncoderConfig, register_configs
 from model import Model
 from omegaconf import DictConfig
 import pyarrow.dataset as ds

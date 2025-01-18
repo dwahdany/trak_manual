@@ -10,12 +10,13 @@ import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 import torch
-from compute_grads import Featurizer
-from config import EncoderConfig, register_configs
-from data import give_dataset, give_embedding_dataset
-from model import Model
 from omegaconf import DictConfig
 from tqdm.auto import tqdm
+
+from compute_grads import Featurizer
+from config.config import EncoderConfig, ExperimentConfig, register_configs
+from data import give_dataset, give_embedding_dataset
+from model import Model
 
 
 class JsonFormatter(logging.Formatter):
@@ -53,16 +54,17 @@ def log_results(params: Dict, metrics: Dict):
 
 def process_combination(
     cfg: DictConfig,
+    experiment_cfg: ExperimentConfig,
     encoder_cfg: EncoderConfig,
     subworker_id: int,
     subworker_total: int,
 ):
-    model = Model(encoder_cfg, cfg.device)
+    model = Model(encoder_cfg, cfg.device, cfg.s3_endpoint_url)
     model, tokenizer, _, preprocess_val = model.create_model_and_transforms()
     embeddings_dataset = give_embedding_dataset(
         cfg,
-        encoder_cfg.ood_dataset_name,
-        encoder_cfg.id_dataset_name,
+        experiment_cfg.ood_dataset_name,
+        experiment_cfg.id_dataset_name,
         tokenizer,
         preprocess_val,
         encoder_cfg.embedding_batch_size,
@@ -98,9 +100,7 @@ def process_combination(
     torch.cuda.empty_cache()
 
     for dataset_name in encoder_cfg.target_datasets:
-        output_base_path = (
-            f"{cfg.output_dir}/{encoder_cfg.name}/{dataset_name.lower()}"
-        )
+        output_base_path = f"{cfg.output_dir}/{experiment_cfg.name}/{encoder_cfg.name}/{dataset_name.lower()}"
         os.makedirs(output_base_path, exist_ok=True)
 
         schema = pa.schema(
@@ -122,9 +122,6 @@ def process_combination(
                 existing_uids.update(batch["uid"].to_pylist())
 
         print(f"Existing uids: {len(existing_uids)}")
-        # exit(0)
-
-        # Buffer for accumulating batches
         accumulated_tables = []
         write_interval = cfg.write_chunks
 
@@ -247,6 +244,7 @@ def get_worker_assignments(
 
 def run_worker(
     cfg: DictConfig,
+    experiment: ExperimentConfig,
     dry_run: bool = False,
 ) -> Optional[List[dict]]:
     """Run or simulate worker processing based on configuration.
@@ -255,7 +253,7 @@ def run_worker(
         dry_run: If True, return assignments instead of processing them
     """
     assignments = get_worker_assignments(
-        cfg.encoders, cfg.worker_id, cfg.worker_total
+        experiment.encoders, cfg.worker_id, cfg.worker_total
     )
 
     if dry_run:
@@ -266,10 +264,13 @@ def run_worker(
             continue
 
         encoder_cfg = next(
-            e for e in cfg.encoders if e.name == assignment["encoder_name"]
+            e
+            for e in experiment.encoders
+            if e.name == assignment["encoder_name"]
         )
         process_combination(
             cfg=cfg,
+            experiment_cfg=experiment,
             encoder_cfg=encoder_cfg,
             subworker_id=assignment["subworker_id"],
             subworker_total=assignment["subworker_total"],
@@ -284,19 +285,20 @@ def main(cfg: DictConfig) -> None:
     # Check if this is a dry run
     dry_run = cfg.get("dry_run", False)
 
-    if dry_run:
-        assignments = run_worker(cfg, dry_run=True)
-        logger = logging.getLogger("results")
-        logger.info(
-            {
-                "type": "dry_run",
-                "worker_id": cfg.worker_id,
-                "worker_total": cfg.worker_total,
-                "assignments": assignments,
-            }
-        )
-    else:
-        run_worker(cfg)
+    for experiment in cfg.experiments:
+        if dry_run:
+            assignments = run_worker(cfg, experiment, dry_run=True)
+            logger = logging.getLogger("results")
+            logger.info(
+                {
+                    "type": "dry_run",
+                    "worker_id": cfg.worker_id,
+                    "worker_total": cfg.worker_total,
+                    "assignments": assignments,
+                }
+            )
+        else:
+            run_worker(cfg, experiment)
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ import numpy as np
 import webdataset as wds
 import zarr
 from torch.utils.data import IterableDataset
-from torchvision.datasets import CIFAR10, CIFAR100, Food101
+from torchvision.datasets import CIFAR10, CIFAR100, STL10, Food101
 from training.data import (
     ResampledShards2,
     expand_urls,
@@ -273,12 +273,17 @@ def give_custom_dataset(
         task = "pcam"
     elif "Food101" in id_dataset_name:
         task = "food101"
+    elif "CIFAR100" in id_dataset_name:
+        task = "cifar100"
+    elif "STL10" in id_dataset_name:
+        task = "stl10"
     else:
         raise ValueError(f"Unknown task: {id_dataset_name}")
     ds_class = {
         "cifar10": CIFAR10,
         "cifar100": CIFAR100,
         "food101": Food101,
+        "stl10": STL10,
     }
     if task.lower() in ds_class.keys():
         classnames = ds_class[task.lower()](root="/datasets").classes

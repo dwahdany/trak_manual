@@ -27,19 +27,6 @@ class EncoderConfig:
     name: str
     path: Optional[str] = None
     url: Optional[str] = None
-    target_datasets: List[str] = field(
-        default_factory=lambda: [
-            # "commonpool",
-            "fairvision/AMD",
-            "fairvision/Glaucoma",
-            "fairvision/DR",
-            "fitzpatrick17k",
-            "Food101",
-            "pcam",
-        ],
-    )
-    ood_dataset_name: str = "commonpool"
-    id_dataset_name: Optional[str] = None
     precision: str = "pure_fp16"  # "amp"
     embedding_batch_size: int = 2_048
     grad_batch_size: int = 48
@@ -51,14 +38,57 @@ class EncoderConfig:
 
 
 @dataclass
+class ExperimentConfig:
+    name: str
+    ood_dataset_name: str = "commonpool"
+    id_dataset_name: Optional[str] = None
+    target_datasets: List[str] = field(
+        default_factory=lambda: [
+            # "commonpool",
+            # "fairvision/AMD",
+            # "fairvision/Glaucoma",
+            # "fairvision/DR",
+            # "fitzpatrick17k",
+            # "Food101",
+            # "pcam",
+            "CIFAR100",
+            "STL10",
+        ],
+    )
+    encoders: List[EncoderConfig] = field(
+        default_factory=lambda: [
+            EncoderConfig(
+                name="local_commonpool_s_s13m_b4k_0",
+                architecture="ViT-B-32",
+                path="/raid/pdpl/small_clip_checkpoints/raw/datacomp_v0/small_scale/checkpoints/epoch_5.pt",
+                model_id=0,
+            ),
+            EncoderConfig(
+                name="local_commonpool_s_s13m_b4k_1",
+                architecture="ViT-B-32",
+                path="/raid/pdpl/small_clip_checkpoints/raw/datacomp_v1/small_scale/checkpoints/epoch_5.pt",
+                model_id=1,
+            ),
+            EncoderConfig(
+                name="local_commonpool_s_s13m_b4k_2",
+                architecture="ViT-B-32",
+                path="/raid/pdpl/small_clip_checkpoints/raw/datacomp_v2/small_scale/checkpoints/epoch_5.pt",
+                model_id=2,
+            ),
+        ]
+    )
+
+
+@dataclass
 class Config:
     device: str = "cuda"
     worker_id: int = 0
-    worker_total: int = 20
+    worker_total: int = 1
     dry_run: bool = False
     debug: bool = False
     output_dir: str = "/raid/pdpl/trak/grads/"
     save_dir: str = "/raid/pdpl/trak/trak_results/"
+    s3_endpoint_url: Optional[str] = "https://s3.fraunhofer.de"
     write_chunks: int = 1000  # number of samples per output chunk
     seed: int = 42  # for sampling the constrastive samples, and projector
     proj_dim: int = 2048
@@ -99,30 +129,21 @@ class Config:
                 custom=True,
                 # num_samples=75750,
             ),
+            "CIFAR100": DatasetConfig(
+                uri="/datasets/cifar100/shards/cifar100-train-{000000..000049}.tar",
+                custom=True,
+            ),
+            "STL10": DatasetConfig(
+                uri="/datasets/stl10/shards/stl10-train-{000000..000004}.tar",
+                custom=True,
+            ),
         }
     )
-    encoders: List[EncoderConfig] = field(
+    experiments: List[ExperimentConfig] = field(
         default_factory=lambda: [
-            EncoderConfig(
-                name="local_commonpool_s_s13m_b4k_0",
-                architecture="ViT-B-32",
-                path="/raid/pdpl/small_clip_checkpoints/raw/datacomp_v0/small_scale/checkpoints/epoch_5.pt",
-                id_dataset_name=None,
-                model_id=0,
-            ),
-            EncoderConfig(
-                name="local_commonpool_s_s13m_b4k_1",
-                architecture="ViT-B-32",
-                path="/raid/pdpl/small_clip_checkpoints/raw/datacomp_v1/small_scale/checkpoints/epoch_5.pt",
-                id_dataset_name=None,
-                model_id=1,
-            ),
-            EncoderConfig(
-                name="local_commonpool_s_s13m_b4k_2",
-                architecture="ViT-B-32",
-                path="/raid/pdpl/small_clip_checkpoints/raw/datacomp_v2/small_scale/checkpoints/epoch_5.pt",
-                id_dataset_name=None,
-                model_id=2,
+            ExperimentConfig(
+                name="raw",
+                training_datasets=["commonpool"],
             ),
         ]
     )
