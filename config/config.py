@@ -149,9 +149,9 @@ class Config:
             create_downstream_experiment("food101"),
             create_downstream_experiment("fitzpatrick17k"),
             create_downstream_experiment("pcam"),
-            create_downstream_experiment("fairvision/amd"),
-            create_downstream_experiment("fairvision/glaucoma"),
-            create_downstream_experiment("fairvision/dr"),
+            create_downstream_experiment("fairvision/AMD"),
+            create_downstream_experiment("fairvision/Glaucoma"),
+            create_downstream_experiment("fairvision/DR"),
         ]
     )
 
