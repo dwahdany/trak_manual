@@ -31,6 +31,7 @@ class Model:
                     self.cfg["architecture"],
                     precision=self.cfg.precision,
                     pretrained=str(path),
+                    load_weights_only=False,
                 )
             )
             if path.parts[1] == "tmp":
