@@ -68,7 +68,13 @@ def check_if_done(
                 os.path.join(output_base_path, "*.parquet")
             )
             dataset = ds.dataset(parquet_files, format="parquet")
-            existing_uids = dataset.count_rows()
+            # Use native PyArrow operations for better performance
+            existing_uids = len(
+                dataset.scanner(columns=["uid"])
+                .to_table()
+                .column("uid")
+                .unique()
+            )
 
             print(f"Existing uids: {existing_uids}")
             if existing_uids < give_dataset_size(cfg.datasets[dataset_name]):
