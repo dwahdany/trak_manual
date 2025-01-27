@@ -2,50 +2,140 @@ from pathlib import Path
 from pprint import pprint
 
 import numpy as np
+import pyarrow.dataset as ds
 import torch as ch
 import zarr
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 from torch import Tensor
-from tqdm.rich import tqdm
 
-from config.config import Config
+from config.config import Config, ExperimentConfig
+
+DEBUG = False
 
 
-def load_uids_grads(input_path):
-    dataset = zarr.open(input_path)
-    uids = np.char.add(
-        np.vectorize(lambda x: f"{x:016x}")(dataset.uid["f0"]),
-        np.vectorize(lambda x: f"{x:016x}")(dataset.uid["f1"]),
+def load_ood_grads(cfg, experiment_cfg, encoder_cfg, progress=None):
+    if progress is not None:
+        load_task = progress.add_task(
+            f"Loading OOD grads for {encoder_cfg.name}...", total=3
+        )
+
+    input_path = str(
+        Path(cfg.output_dir)
+        / experiment_cfg.name
+        / encoder_cfg.name
+        / experiment_cfg.ood_dataset_name
+        / "data.zarr"
     )
-    g = zarr.load(input_path + "/grads")
+    dataset = zarr.open(input_path)
 
-    # Create a structured array combining both arrays
-    dtype = [("uids", uids.dtype), ("grads", g.dtype, g.shape[1])]
-    combined = np.empty(len(uids), dtype=dtype)
-    combined["uids"] = uids
-    combined["grads"] = g
+    zarr_chunk_size = dataset["uid"].chunks[0]
+    chunk_size = zarr_chunk_size * 10
+    total_size = dataset["uid"].shape[0] if not DEBUG else 1000
+    chunks = []
+    if progress is not None:
+        chunk_task = progress.add_task(
+            "Loading chunks...",
+            total=(total_size + chunk_size - 1) // chunk_size,
+        )
 
-    # Sort in-place based on uids
+    for start_idx in range(0, total_size, chunk_size):
+        end_idx = min(start_idx + chunk_size, total_size)
+
+        # Load chunk data
+        uids_chunk = dataset["uid"][start_idx:end_idx].astype("U32")
+        g_chunk = dataset["grads"][start_idx:end_idx]
+        out_to_loss_chunk = dataset["loss_grads"][start_idx:end_idx]
+
+        # Create structured array for this chunk
+        dtype = [
+            ("uids", uids_chunk.dtype),
+            ("grads", g_chunk.dtype, g_chunk.shape[1]),
+            ("loss_grads", out_to_loss_chunk.dtype),
+        ]
+        chunk = np.empty(len(uids_chunk), dtype=dtype)
+        chunk["uids"] = uids_chunk
+        chunk["grads"] = g_chunk
+        chunk["loss_grads"] = out_to_loss_chunk
+        chunks.append(chunk)
+
+        if progress is not None:
+            progress.advance(chunk_task)
+
+    if progress is not None:
+        progress.remove_task(chunk_task)
+
+    if progress is not None:
+        progress.advance(load_task)
+
+    # Merge and sort chunks
+    combined = np.concatenate(chunks)
     combined.sort(order="uids")
 
-    # Extract back the sorted arrays
+    if progress is not None:
+        progress.advance(load_task)
+
+    # Extract arrays using buffer protocol to avoid extra copies
     uids = combined["uids"]
-    g = combined["grads"]
-    return uids, g
+    g = ch.from_numpy(combined["grads"]).pin_memory()
+    out_to_loss = ch.from_numpy(combined["loss_grads"]).pin_memory()
+
+    if progress is not None:
+        progress.advance(load_task)
+        progress.remove_task(load_task)
+
+    return uids, g, out_to_loss
 
 
-def get_xtx(grads: Tensor, batch_size=20_000) -> Tensor:
+def load_dataset_size(cfg, experiment_cfg, encoder_cfg):
+    if DEBUG:
+        return 1000
+    input_path = str(
+        Path(cfg.output_dir)
+        / experiment_cfg.name
+        / encoder_cfg.name
+        / experiment_cfg.ood_dataset_name
+        / "data.zarr"
+    )
+    dataset = zarr.open(input_path)
+    ood_grads = dataset["grads"].shape[0]
+    if experiment_cfg.id_dataset_name is not None:
+        id_grads = get_indices(experiment_cfg.id_dataset_name, id=False).shape[
+            0
+        ]
+        return ood_grads + id_grads
+    else:
+        return ood_grads
+
+
+def get_xtx(grads: Tensor, batch_size=20_000, progress=None) -> Tensor:
     proj_dim = grads.shape[1]
     result = ch.zeros(proj_dim, proj_dim, dtype=grads.dtype, device="cuda")
     blocks = ch.split(grads, split_size_or_sections=batch_size, dim=0)
 
-    for block in tqdm(blocks):
+    # Use progress.track if progress bar is provided, otherwise use regular iteration
+    iterator = (
+        progress.track(blocks, description="Computing XTX")
+        if progress
+        else blocks
+    )
+    for block in iterator:
         result += block.T.to("cuda") @ block.to("cuda")
 
     return result
 
 
 def get_x_xtx_inv(
-    grads: Tensor, xtx: Tensor, lambda_reg=0.0, batch_size=20_000
+    grads: Tensor,
+    xtx: Tensor,
+    lambda_reg=0.0,
+    batch_size=20_000,
+    progress=None,
 ) -> Tensor:
     xtx_reg = xtx + lambda_reg * ch.eye(
         xtx.size(dim=0), device=xtx.device, dtype=xtx.dtype
@@ -63,8 +153,13 @@ def get_x_xtx_inv(
 
     # Process blocks on GPU
     result_blocks = []
-    for block in tqdm(grads_blocks, desc="Processing blocks"):
-        # Move block to GPU, compute, then back to CPU
+    # Use progress.track if progress bar is provided
+    iterator = (
+        progress.track(grads_blocks, description="Processing blocks")
+        if progress
+        else grads_blocks
+    )
+    for block in iterator:
         block_gpu = block.cuda()
         result_gpu = block_gpu @ xtx_inv_gpu
         result_blocks.append(result_gpu.cpu())
@@ -75,79 +170,324 @@ def get_x_xtx_inv(
     return result.to(dtype=grads.dtype)
 
 
-def save_scores(scores, cfg, encoder_cfg, target_dataset_name, score_type):
-    scores_path = str(Path(cfg.save_dir) / "scores.zarr")
-    store = zarr.open(scores_path, mode="a")
-    if encoder_cfg.id_dataset_name is None:
-        id_suffix = "None"
+def get_indices(target, id: bool = True):
+    id_indices_zarr = zarr.open("/raid/pdpl/id_downstream_idx.zarr", mode="r")
+    if id:
+        return id_indices_zarr[target]["id_indices"]
     else:
-        id_suffix = f"{encoder_cfg.id_dataset_name}"
-    store.create_dataset(
-        f"{encoder_cfg.name}/{encoder_cfg.ood_dataset_name}/{id_suffix}/{target_dataset_name}/{score_type}",
-        data=scores,
+        return id_indices_zarr[target]["downstream_indices"]
+
+
+def featurize_with_id(cfg, experiment_cfg):
+    train_dataset_size = load_dataset_size(
+        cfg, experiment_cfg, experiment_cfg.encoders[0]
+    )
+    id_indices = get_indices(experiment_cfg.id_dataset_name, id=True)
+
+    avg_out_to_loss = ch.zeros(train_dataset_size, device="cpu")
+    avg_scores = ch.zeros(train_dataset_size, device="cpu")
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        TextColumn("[{task.completed}/{task.total}]"),
+        TimeElapsedColumn(),
+    ) as progress:
+        encoder_task = progress.add_task(
+            "Processing encoders...", total=len(experiment_cfg.encoders)
+        )
+
+        for encoder_cfg in experiment_cfg.encoders:
+            uids, g, out_to_loss_ood = load_ood_grads(
+                cfg, experiment_cfg, encoder_cfg, progress=progress
+            )
+            assert len(g) == train_dataset_size - len(id_indices)
+            assert len(out_to_loss_ood) == train_dataset_size - len(id_indices)
+
+            input_path = str(
+                Path(cfg.output_dir)
+                / experiment_cfg.name
+                / encoder_cfg.name
+                / experiment_cfg.id_dataset_name
+            )
+            dataset_target = ds.dataset(input_path, format="parquet")
+            batch_size = 16384
+            scanner = dataset_target.scanner(
+                columns=["grads", "uid"], batch_size=batch_size
+            )
+            grads_list = []
+            uids_list = []
+
+            out_to_loss_list = []
+
+            batch_task = progress.add_task(
+                f"Loading batches for {experiment_cfg.id_dataset_name}...",
+                total=dataset_target.count_rows() // batch_size,
+            )
+
+            for batch in scanner.to_batches():
+                grads_list.extend(
+                    batch.column("grads").to_numpy(zero_copy_only=False)
+                )
+                uids_list.extend(
+                    batch.column("uid").to_numpy(zero_copy_only=False)
+                )
+                out_to_loss_list.extend(
+                    batch.column("loss_grads").to_numpy(zero_copy_only=False)
+                )
+                progress.advance(batch_task)
+
+            progress.remove_task(batch_task)
+
+            g_target = np.stack(grads_list)
+            uids_target = np.stack(uids_list)
+            out_to_loss_target = np.stack(out_to_loss_list)
+            dtype = [
+                ("uids", uids_target.dtype),
+                ("grads", g_target.dtype, g_target.shape[1]),
+                ("out_to_loss", out_to_loss_target.dtype),
+            ]
+            combined = np.empty(len(uids_target), dtype=dtype)
+            combined["uids"] = uids_target
+            combined["grads"] = g_target
+            combined["out_to_loss"] = out_to_loss_target
+            combined.sort(order="uids")
+            uids_target = combined["uids"]
+            g_target = combined["grads"]
+            out_to_loss_target = combined["out_to_loss"]
+
+            mask = np.isin(uids_target, id_indices)
+
+            out_to_loss_id = out_to_loss_target[mask]
+            g_train_pt = ch.cat([g, g_target[mask]])
+            out_to_loss_train = np.concatenate(
+                [out_to_loss_ood, out_to_loss_id]
+            )
+            avg_out_to_loss += out_to_loss_train
+
+            xtx = get_xtx(
+                ch.tensor(g_train_pt, device="cpu"), progress=progress
+            )
+            x_xtx_inv = get_x_xtx_inv(
+                ch.tensor(g_train_pt, device="cpu"), xtx, progress=progress
+            )
+            features = x_xtx_inv.pin_memory()
+            g_downstream_pt = ch.tensor(
+                g_target[~mask], device="cpu"
+            ).pin_memory()
+
+            batch_size = 8192 * 2
+            scores_downstream = []
+
+            score_task = progress.add_task(
+                f"Computing scores for {experiment_cfg.id_dataset_name}...",
+                total=len(features) // batch_size + 1,
+            )
+
+            for i in range(0, len(features), batch_size):
+                batch = features[i : i + batch_size].cuda()
+                batch_scores = ch.mean(
+                    batch @ g_downstream_pt.cuda().T, axis=1
+                )
+                scores_downstream.append(batch_scores.cpu())
+                progress.advance(score_task)
+
+            progress.remove_task(score_task)
+            scores_downstream = ch.cat(scores_downstream)
+            avg_scores += scores_downstream
+
+            progress.advance(encoder_task)
+
+    avg_out_to_loss /= len(experiment_cfg.encoders)
+    avg_scores /= len(experiment_cfg.encoders)
+    final_scores = (avg_scores * avg_out_to_loss).numpy()
+    ood_scores = final_scores[: train_dataset_size - len(id_indices)]
+    id_scores = final_scores[train_dataset_size - len(id_indices) :]
+
+    # Create the zarr store
+    store = zarr.open("/raid/pdpl/trak_scores.zarr", mode="a")
+
+    # Get or create groups
+    exp_group = store.require_group(experiment_cfg.name)
+    encoder_group = exp_group.require_group(encoder_cfg.name)
+
+    target_group = encoder_group.require_group(experiment_cfg.id_dataset_name)
+    target_group.create_dataset(
+        name="ood_scores",
+        data=ood_scores,
+        dtype=ood_scores.dtype,
+        overwrite=True,
+    )
+    target_group.create_dataset(
+        name="id_scores",
+        data=id_scores,
+        dtype=id_scores.dtype,
         overwrite=True,
     )
 
 
-def give_model_scores(encoder_cfg, cfg):
-    input_path = str(
-        Path(cfg.output_dir)
-        / encoder_cfg.name
-        / encoder_cfg.ood_dataset_name
-        / "data.zarr"
+def featurize_no_id(
+    cfg,
+    experiment_cfg,
+):
+    print("Featurizing no ID")
+    train_dataset_size = load_dataset_size(
+        cfg, experiment_cfg, experiment_cfg.encoders[0]
     )
-    uids, g = load_uids_grads(input_path)
+    targets = [
+        "pcam",
+        # "fitzpatrick17k",
+        # "fairvision/dr",
+        "fairvision/amd",
+        # "fairvision/glaucoma",
+        "food101",
+        "cifar100",
+        # "stl10",
+    ]
+    avg_out_to_loss = ch.zeros(train_dataset_size, device="cpu")
+    avg_scores = {
+        k: ch.zeros(train_dataset_size, device="cpu") for k in targets
+    }
+    uids = None
 
-    xtx = get_xtx(ch.tensor(g, device="cpu"))
-    x_xtx_inv = get_x_xtx_inv(ch.tensor(g, device="cpu"), xtx)
-    features = x_xtx_inv
-
-    all_scores = {}
-    for target_dataset_name in encoder_cfg.target_datasets:
-        target_path = str(
-            Path(cfg.output_dir)
-            / encoder_cfg.name
-            / target_dataset_name
-            / "data.zarr"
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        TextColumn("[{task.completed}/{task.total}]"),
+        TimeElapsedColumn(),
+    ) as progress:
+        encoder_task = progress.add_task(
+            "Processing encoders...", total=len(cfg.experiments[0].encoders)
         )
-        target_uids, g_target = load_uids_grads(target_path)
-        features_pinned = features.pin_memory()
-        g_target_pinned = ch.tensor(g_target, device="cpu").pin_memory()
 
-        from tqdm.rich import trange
+        for encoder_cfg in cfg.experiments[0].encoders:
+            # all_scores = {}
+            uids, g, out_to_loss = load_ood_grads(
+                cfg, cfg.experiments[0], encoder_cfg, progress=progress
+            )
+            if uids is None:
+                uids = uids
+            else:
+                assert np.array_equal(uids, uids)
+            avg_out_to_loss += out_to_loss
+            xtx = get_xtx(ch.tensor(g, device="cpu"), progress=progress)
+            x_xtx_inv = get_x_xtx_inv(
+                ch.tensor(g, device="cpu"), xtx, progress=progress
+            )
+            features = x_xtx_inv.pin_memory()
 
-        batch_size = 2048
-        scores = []
-        for i in trange(0, len(features), batch_size):
-            batch = features_pinned[i : i + batch_size].cuda()
-            batch_scores = ch.mean(batch @ g_target_pinned.cuda().T, axis=1)
-            scores.append(batch_scores.cpu())
-        scores = ch.cat(scores)
+            target_task = progress.add_task(
+                f"Processing targets for {encoder_cfg.name}...",
+                total=len(targets),
+            )
 
-        all_scores[target_dataset_name] = scores
-        save_scores(scores, cfg, encoder_cfg, target_dataset_name, "mean")
+            for target in targets:
+                input_path = str(
+                    Path(cfg.output_dir)
+                    / cfg.experiments[0].name
+                    / encoder_cfg.name
+                    / target
+                )
+                dataset_target = ds.dataset(input_path, format="parquet")
+                batch_size = 16384
+                scanner = dataset_target.scanner(
+                    columns=["grads", "uid"], batch_size=batch_size
+                )
+                grads_list = []
+                uids_list = []
 
-    return all_scores
+                batch_task = progress.add_task(
+                    f"Loading batches for {target}...",
+                    total=dataset_target.count_rows() // batch_size,
+                )
+
+                for batch in scanner.to_batches():
+                    grads_list.extend(
+                        batch.column("grads").to_numpy(zero_copy_only=False)
+                    )
+                    uids_list.extend(
+                        batch.column("uid").to_numpy(zero_copy_only=False)
+                    )
+                    progress.advance(batch_task)
+
+                progress.remove_task(batch_task)
+
+                g_target = np.stack(grads_list)
+                uids_target = np.stack(uids_list)
+                id_indices = get_indices(
+                    target, id=False
+                )  # get downstream indices
+                mask = np.isin(uids_target, id_indices)
+                g_target_pt = ch.tensor(
+                    g_target[mask], device="cpu"
+                ).pin_memory()
+
+                batch_size = 8192 * 2
+                scores = []
+
+                score_task = progress.add_task(
+                    f"Computing scores for {target}...",
+                    total=len(features) // batch_size + 1,
+                )
+
+                for i in range(0, len(features), batch_size):
+                    batch = features[i : i + batch_size].cuda()
+                    batch_scores = ch.mean(
+                        batch @ g_target_pt.cuda().T, axis=1
+                    )
+                    scores.append(batch_scores.cpu())
+                    progress.advance(score_task)
+
+                progress.remove_task(score_task)
+                scores = ch.cat(scores)
+                avg_scores[target] += scores
+                # all_scores[target] = scores.cpu()
+                progress.advance(target_task)
+
+            progress.remove_task(target_task)
+            progress.advance(encoder_task)
+
+    avg_out_to_loss /= len(cfg.experiments[0].encoders)
+    avg_scores = {
+        k: v / len(cfg.experiments[0].encoders) for k, v in avg_scores.items()
+    }
+    final_scores = {
+        k: (v * avg_out_to_loss).numpy() for k, v in avg_scores.items()
+    }
+
+    store = zarr.DirectoryStore("/raid/pdpl/trak_scores.zarr")
+    root = zarr.group(store=store, overwrite=False)
+    exp_group = root.require_group(experiment_cfg.name)
+    for target in targets:
+        target_group = exp_group.require_group(target)
+        target_group.create_dataset(
+            name="ood_scores",
+            data=final_scores[target],
+            dtype=final_scores[target].dtype,
+            overwrite=True,
+        )
+        target_group.create_dataset(
+            name="ood_uids",
+            data=uids,
+            dtype=uids.dtype,
+            overwrite=True,
+        )
 
 
 def main():
     cfg = Config()
-    # cfg.device="cpu"
+    cfg.experiments = [ExperimentConfig(name="raw")]
     pprint(cfg)
-    all_scores = []
+    for experiment_cfg in cfg.experiments:
+        if experiment_cfg.id_dataset_name is not None:
+            featurize_with_id(cfg, experiment_cfg)
+        else:
+            featurize_no_id(cfg, experiment_cfg)
 
-    for encoder_cfg in cfg.encoders:
-        scores = give_model_scores(encoder_cfg, cfg)
-        all_scores.append(scores)
 
-    for dataset_name in cfg.datasets.keys():
-        dataset_scores = [
-            scores[dataset_name]
-            for scores in all_scores
-            if dataset_name in scores
-        ]
-        if dataset_scores:  # Check if we have any scores for this dataset
-            avg_scores = ch.stack(dataset_scores).mean(dim=0)
-            print(
-                f"{dataset_name}: {avg_scores.mean():.3f} ± {avg_scores.std():.3f}"
-            )
+if __name__ == "__main__":
+    main()

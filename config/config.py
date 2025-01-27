@@ -44,15 +44,15 @@ class ExperimentConfig:
     id_dataset_name: Optional[str] = None
     target_datasets: List[str] = field(
         default_factory=lambda: [
-            # "commonpool",
+            "commonpool",
             # "fairvision/AMD",
             # "fairvision/Glaucoma",
             # "fairvision/DR",
             # "fitzpatrick17k",
             # "Food101",
             # "pcam",
-            "CIFAR100",
-            "STL10",
+            # "CIFAR100",
+            # "STL10",
         ],
     )
     encoders: List[EncoderConfig] = field(
@@ -104,17 +104,17 @@ class Config:
                 custom=True,
                 # num_samples=262144,
             ),
-            "fairvision/AMD": DatasetConfig(
+            "fairvision/amd": DatasetConfig(
                 uri="/datasets/fairvision/AMD/shards/amd-train-{000000..000005}.tar",
                 custom=True,
                 # num_samples=6000,
             ),
-            "fairvision/Glaucoma": DatasetConfig(
+            "fairvision/glaucoma": DatasetConfig(
                 uri="/datasets/fairvision/Glaucoma/shards/glaucoma-train-{000000..000005}.tar",
                 custom=True,
                 # num_samples=6000,
             ),
-            "fairvision/DR": DatasetConfig(
+            "fairvision/dr": DatasetConfig(
                 uri="/datasets/fairvision/DR/shards/dr-train-{000000..000005}.tar",
                 custom=True,
                 # num_samples=6000,
@@ -124,16 +124,16 @@ class Config:
                 custom=True,
                 # num_samples=12858,
             ),
-            "Food101": DatasetConfig(
+            "food101": DatasetConfig(
                 uri="/datasets/food101/shards/food101-train-{000000..000075}.tar",
                 custom=True,
                 # num_samples=75750,
             ),
-            "CIFAR100": DatasetConfig(
+            "cifar100": DatasetConfig(
                 uri="/datasets/cifar100/shards/cifar100-train-{000000..000049}.tar",
                 custom=True,
             ),
-            "STL10": DatasetConfig(
+            "stl10": DatasetConfig(
                 uri="/datasets/stl10/shards/stl10-train-{000000..000004}.tar",
                 custom=True,
             ),
@@ -141,17 +141,17 @@ class Config:
     )
     experiments: List[ExperimentConfig] = field(
         default_factory=lambda: [
-            # ExperimentConfig(
-            #     name="raw",
-            # ),
+            ExperimentConfig(
+                name="raw",
+            ),
             create_downstream_experiment("cifar100"),
-            create_downstream_experiment("stl10"),
+            # create_downstream_experiment("stl10"),
             create_downstream_experiment("food101"),
-            create_downstream_experiment("fitzpatrick17k"),
+            # create_downstream_experiment("fitzpatrick17k"),
             create_downstream_experiment("pcam"),
-            create_downstream_experiment("fairvision/AMD"),
-            create_downstream_experiment("fairvision/Glaucoma"),
-            create_downstream_experiment("fairvision/DR"),
+            create_downstream_experiment("fairvision/amd"),
+            # create_downstream_experiment("fairvision/glaucoma"),
+            # create_downstream_experiment("fairvision/dr"),
         ]
     )
 
@@ -166,19 +166,19 @@ def create_downstream_experiment(name: str):
             EncoderConfig(
                 name=f"{name}_v0",
                 architecture="ViT-B-32",
-                path=f"s3://pdpl/small_clip_checkpoints/curation/image-based/{name}/ratio_1.0/datacomp_v0/small_scale/checkpoints/epoch_5.pt",
+                path=f"s3://pdpl/small_clip_checkpoints/curation/random/{name}/ratio_1.0/datacomp_v0/small_scale/checkpoints/epoch_5.pt",
                 model_id=0,
             ),
             EncoderConfig(
                 name=f"{name}_v1",
                 architecture="ViT-B-32",
-                path=f"s3://pdpl/small_clip_checkpoints/curation/image-based/{name}/ratio_1.0/datacomp_v1/small_scale/checkpoints/epoch_5.pt",
+                path=f"s3://pdpl/small_clip_checkpoints/curation/random/{name}/ratio_1.0/datacomp_v1/small_scale/checkpoints/epoch_5.pt",
                 model_id=1,
             ),
             EncoderConfig(
                 name=f"{name}_v2",
                 architecture="ViT-B-32",
-                path=f"s3://pdpl/small_clip_checkpoints/curation/image-based/{name}/ratio_1.0/datacomp_v2/small_scale/checkpoints/epoch_5.pt",
+                path=f"s3://pdpl/small_clip_checkpoints/curation/random/{name}/ratio_1.0/datacomp_v2/small_scale/checkpoints/epoch_5.pt",
                 model_id=2,
             ),
         ],

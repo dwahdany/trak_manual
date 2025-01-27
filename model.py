@@ -46,5 +46,5 @@ class Model:
             )
             tokenizer = get_tokenizer(f"hf-hub:{self.cfg['url']}")
 
-        model = model.to(self.cfg.device)
+        model = model.to(self.device)
         return model, tokenizer, preprocess_train, preprocess_val

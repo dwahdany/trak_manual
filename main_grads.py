@@ -1,7 +1,9 @@
 import gc
+import glob
 import json
 import logging
 import os
+import traceback
 import uuid
 from typing import Dict, List, Optional
 
@@ -15,7 +17,7 @@ from tqdm.auto import tqdm
 
 from compute_grads import Featurizer
 from config.config import EncoderConfig, ExperimentConfig, register_configs
-from data import give_dataset, give_embedding_dataset
+from data import give_dataset, give_dataset_size, give_embedding_dataset
 from model import Model
 
 
@@ -52,6 +54,33 @@ def log_results(params: Dict, metrics: Dict):
     )
 
 
+def check_if_done(
+    cfg: DictConfig,
+    experiment_cfg: ExperimentConfig,
+    encoder_cfg: EncoderConfig,
+):
+    for dataset_name in experiment_cfg.target_datasets:
+        output_base_path = f"{cfg.output_dir}/{experiment_cfg.name}/{encoder_cfg.name}/{dataset_name.lower()}"
+
+        # Check for existing UIDs across all partitions
+        if os.path.exists(output_base_path):
+            parquet_files = glob.glob(
+                os.path.join(output_base_path, "*.parquet")
+            )
+            dataset = ds.dataset(parquet_files, format="parquet")
+            existing_uids = dataset.count_rows()
+
+            print(f"Existing uids: {existing_uids}")
+            if existing_uids < give_dataset_size(cfg.datasets[dataset_name]):
+                print(
+                    f"Not done yet for {dataset_name} with encoder {encoder_cfg.name}. Got {existing_uids} samples, expected {give_dataset_size(cfg.datasets[dataset_name])}"
+                )
+                return False
+        else:
+            return False
+    return True
+
+
 def process_combination(
     cfg: DictConfig,
     experiment_cfg: ExperimentConfig,
@@ -66,6 +95,8 @@ def process_combination(
         )
     except Exception as e:
         print(f"Skipping {encoder_cfg.name} because of error: {e}")
+        print("Traceback:")
+        print(traceback.format_exc())
         return
     embeddings_dataset = give_embedding_dataset(
         cfg,
@@ -105,7 +136,7 @@ def process_combination(
     gc.collect()
     torch.cuda.empty_cache()
 
-    for dataset_name in encoder_cfg.target_datasets:
+    for dataset_name in experiment_cfg.target_datasets:
         output_base_path = f"{cfg.output_dir}/{experiment_cfg.name}/{encoder_cfg.name}/{dataset_name.lower()}"
         os.makedirs(output_base_path, exist_ok=True)
 
@@ -123,11 +154,17 @@ def process_combination(
         # Check for existing UIDs across all partitions
         existing_uids = set()
         if os.path.exists(output_base_path):
-            dataset = ds.dataset(output_base_path, format="parquet")
+            parquet_files = glob.glob(
+                os.path.join(output_base_path, "*.parquet")
+            )
+            dataset = ds.dataset(parquet_files, format="parquet")
             for batch in dataset.scanner().to_batches():
                 existing_uids.update(batch["uid"].to_pylist())
 
         print(f"Existing uids: {len(existing_uids)}")
+        if len(existing_uids) == give_dataset_size(cfg.datasets[dataset_name]):
+            print(f"Skipping {encoder_cfg.name} because it is already done")
+            return
         accumulated_tables = []
         write_interval = cfg.write_chunks
 
@@ -187,7 +224,7 @@ def process_combination(
                         metadata
                     )
 
-                    output_path = f"{output_base_path}/{partition_base_name}_{current_partition}_final_{uuid.uuid4()}.parquet"
+                    output_path = f"{output_base_path}/{partition_base_name}_{current_partition}_{uuid.uuid4()}.parquet"
                     pq.write_table(combined_table, output_path)
                     print(
                         f"Wrote partition {current_partition} with {len(accumulated_tables)} batches"
@@ -201,7 +238,7 @@ def process_combination(
             combined_table = pa.concat_tables(accumulated_tables)
             combined_table = combined_table.replace_schema_metadata(metadata)
 
-            output_path = f"{output_base_path}/{partition_base_name}_{current_partition}_{uuid.uuid4()}.parquet"
+            output_path = f"{output_base_path}/{partition_base_name}_{current_partition}_final_{uuid.uuid4()}.parquet"
             pq.write_table(combined_table, output_path)
             print(
                 f"Wrote final partition {current_partition} with {len(accumulated_tables)} batches"
@@ -218,33 +255,17 @@ def get_worker_assignments(
     Returns:
         List of dicts containing assignment details
     """
-    # number of workers per encoder
-    subworker_total = max(1, worker_total // len(encoders))
-
     assignments = []
     for i, encoder_cfg in enumerate(encoders):
-        print(
-            f"Encoder {i}: worker_id % len(encoders) = {worker_id % len(encoders)}"
+        assignments.append(
+            {
+                "encoder_id": i,
+                "encoder_name": encoder_cfg.name,
+                "subworker_id": worker_id,
+                "subworker_total": worker_total,
+            }
         )
-        print(f"Encoder {i}: i % worker_total = {i % worker_total}")
-        if i % worker_total == worker_id % len(
-            encoders
-        ):  # should we work on this encoder?
-            subworker_id = worker_id // len(
-                encoders
-            )  # what is our subworker id for this encoder?
-            print(f"Encoder {i}: subworker_id = {subworker_id}")
-            print(f"Encoder {i}: subworker_total = {subworker_total}")
-            if subworker_id < subworker_total:
-                assignments.append(
-                    {
-                        "encoder_id": i,
-                        "encoder_name": encoder_cfg.name,
-                        "subworker_id": subworker_id,
-                        "subworker_total": subworker_total,
-                    }
-                )
-    print(f"Subworker got {len(assignments)} assignments")
+    print(f"Worker {worker_id} got {len(assignments)} assignments")
     return assignments
 
 
@@ -258,8 +279,13 @@ def run_worker(
     Args:
         dry_run: If True, return assignments instead of processing them
     """
+    encoders = [
+        encoder
+        for encoder in tqdm(experiment.encoders, desc="Checking if done")
+        if not check_if_done(cfg, experiment, encoder)
+    ]
     assignments = get_worker_assignments(
-        experiment.encoders, cfg.worker_id, cfg.worker_total
+        encoders, cfg.worker_id, cfg.worker_total
     )
 
     if dry_run:

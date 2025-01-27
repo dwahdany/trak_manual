@@ -1887,7 +1887,7 @@ wheels = [
 [[package]]
 name = "training"
 version = "0.1.0"
-source = { directory = "../pdpl/training" }
+source = { directory = "../datacomp/training" }
 
 [package.metadata]
 requires-dist = [
@@ -1948,7 +1948,7 @@ requires-dist = [
     { name = "torch", specifier = ">=2.5.1" },
     { name = "torchvision", specifier = ">=0.20.1" },
     { name = "tqdm", specifier = ">=4.67.1" },
-    { name = "training", directory = "../pdpl/training" },
+    { name = "training", directory = "../datacomp/training" },
     { name = "traker", extras = ["fast"], specifier = ">=0.3.2" },
     { name = "webdataset", specifier = ">=0.2.100" },
     { name = "zarr", specifier = ">=2.16.1" },
