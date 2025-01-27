@@ -84,7 +84,11 @@ def give_worker_shards(
         json.load(open(metadata_file, "r"))["successes"]
         for metadata_file in metadata_files
     ]
-    # Calculate cumulative counts to help with splitting
+    # shuffling the shards helps when changing the number of workers
+    rng = np.random.default_rng()
+    perm = rng.permutation(len(shards))
+    shards = [shards[i] for i in perm]
+    shard_file_counts = [shard_file_counts[i] for i in perm]
     cumsum = np.cumsum(shard_file_counts)
     total_samples = cumsum[-1]
 
