@@ -85,7 +85,7 @@ def give_worker_shards(
         for metadata_file in metadata_files
     ]
     # shuffling the shards helps when changing the number of workers
-    rng = np.random.default_rng()
+    rng = np.random.default_rng(seed=worker_total)
     perm = rng.permutation(len(shards))
     shards = [shards[i] for i in perm]
     shard_file_counts = [shard_file_counts[i] for i in perm]
