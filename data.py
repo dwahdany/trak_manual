@@ -138,6 +138,14 @@ def give_worker_shards(
         return shards[start_shard:end_shard], samples
 
 
+def give_dataset_size(dataset_cfg):
+    shards = dataset_cfg_to_shards(dataset_cfg)
+    return sum(
+        json.load(open(shard.replace(".tar", "_stats.json"), "r"))["successes"]
+        for shard in shards
+    )
+
+
 def dataset_cfg_to_shards(dataset_cfg):
     shards = []
     if dataset_cfg.uris is None:
@@ -265,21 +273,21 @@ def give_custom_dataset(
         )
     else:
         id_dataset = wds.SimpleShardList(shards)
-    if "fairvision/Glaucoma" in id_dataset_name:
+    if "fairvision/glaucoma" in id_dataset_name.lower():
         task = "fairvision/glaucoma"
-    elif "fairvision/AMD" in id_dataset_name:
+    elif "fairvision/amd" in id_dataset_name.lower():
         task = "fairvision/amd"
-    elif "fairvision/DR" in id_dataset_name:
+    elif "fairvision/dr" in id_dataset_name.lower():
         task = "fairvision/dr"
-    elif "fitzpatrick17k" in id_dataset_name:
+    elif "fitzpatrick17k" in id_dataset_name.lower():
         task = "fitzpatrick17k"
-    elif "pcam" in id_dataset_name:
+    elif "pcam" in id_dataset_name.lower():
         task = "pcam"
-    elif "Food101" in id_dataset_name:
+    elif "food101" in id_dataset_name.lower():
         task = "food101"
-    elif "CIFAR100" in id_dataset_name:
+    elif "cifar100" in id_dataset_name.lower():
         task = "cifar100"
-    elif "STL10" in id_dataset_name:
+    elif "stl10" in id_dataset_name.lower():
         task = "stl10"
     else:
         raise ValueError(f"Unknown task: {id_dataset_name}")
@@ -309,12 +317,28 @@ def give_custom_dataset(
 
     id_zarr = zarr.open("/raid/pdpl/id_downstream_idx.zarr", mode="r")
     id_uids = set(id_zarr[task]["id_indices"])
+    selected_id_str = {f"{uid:08d}" for uid in id_uids}
 
     def id_filter(sample):
-        return sample["__key__"] in id_uids
+        return sample["__key__"] in selected_id_str
 
     indistribution_data_num_samples = len(id_uids)
     return id_dataset, indistribution_data_num_samples, id_filter, label_map
+
+
+def give_number_of_samples(dataset_cfg):
+    shards = dataset_cfg_to_shards(dataset_cfg)
+    total_samples = 0
+    for shard in shards:
+        stats_file = shard.replace(".tar", "_stats.json")
+        try:
+            with open(stats_file) as f:
+                stats = json.load(f)
+                total_samples += stats["successes"]
+        except FileNotFoundError:
+            print(f"Warning: Stats file not found: {stats_file}")
+            continue
+    return total_samples
 
 
 def give_embedding_dataset(
@@ -338,7 +362,8 @@ def give_embedding_dataset(
         )
 
         p_id = indistribution_data_num_samples / (
-            indistribution_data_num_samples + ood_dataset_cfg.num_samples
+            indistribution_data_num_samples
+            + give_number_of_samples(ood_dataset_cfg)
         )
 
         probs = [1 - p_id, p_id]
@@ -373,11 +398,13 @@ def give_embedding_dataset(
         )
 
     if len(pipelines) > 1:
-        pipeline = wds.RandomMix(
-            [wds.DataPipeline(*pipeline) for pipeline in pipelines],
-            probs=probs,
-            longest=False,
-        )
+        pipeline = [
+            wds.RandomMix(
+                [wds.DataPipeline(*pipeline) for pipeline in pipelines],
+                probs=probs,
+                longest=False,
+            )
+        ]
     else:
         pipeline = pipelines[0]
     pipeline.extend(
