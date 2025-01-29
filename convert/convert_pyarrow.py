@@ -48,8 +48,7 @@ with Progress() as progress:
             if store_path.exists() and done_file.exists():
                 print(f"Zarr store already exists at {store_path}")
                 print("Store info:")
-                store = zarr.DirectoryStore(str(store_path))
-                root = zarr.group(store=store)
+                root = zarr.open_group(str(store_path))
                 print(root.tree())
                 progress.advance(encoder_task)
                 continue
@@ -64,8 +63,7 @@ with Progress() as progress:
             table = dataset.to_table()
 
             # Create zarr store
-            store = zarr.DirectoryStore(str(store_path))
-            root = zarr.group(store=store)
+            root = zarr.open(str(store_path), mode="a")
 
             column_task = progress.add_task(
                 f"Converting columns for {encoder_cfg.name}",
@@ -85,9 +83,14 @@ with Progress() as progress:
                 table = table.take(unique_indices)
 
             for col in table.column_names:
-                root.create_dataset(
-                    col, data=convert_column(col, table), chunks=True
+                data = convert_column(col, table)
+                arr = root.create_array(
+                    col,
+                    shape=data.shape,
+                    dtype=data.dtype,
+                    overwrite=True,
                 )
+                arr[:] = data
                 progress.advance(column_task)
 
             progress.remove_task(column_task)

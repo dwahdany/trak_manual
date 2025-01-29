@@ -1,0 +1,13 @@
+[project]
+name = "convert"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "hydra-core>=1.3.2",
+    "numpy>=2.2.2",
+    "pyarrow>=19.0.0",
+    "rich>=13.9.4",
+    "zarr>=3.0.1",
+]
