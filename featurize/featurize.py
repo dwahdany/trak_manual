@@ -5,6 +5,7 @@ import numpy as np
 import pyarrow.dataset as ds
 import torch as ch
 import zarr
+from config.config import Config, ExperimentConfig
 from rich.progress import (
     BarColumn,
     Progress,
@@ -13,8 +14,6 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 from torch import Tensor
-
-from config.config import Config, ExperimentConfig
 
 DEBUG = False
 
@@ -102,15 +101,21 @@ def load_dataset_size(cfg, experiment_cfg, encoder_cfg):
         / experiment_cfg.ood_dataset_name
         / "data.zarr"
     )
-    dataset = zarr.open(input_path)
-    ood_grads = dataset["grads"].shape[0]
-    if experiment_cfg.id_dataset_name is not None:
-        id_grads = get_indices(experiment_cfg.id_dataset_name, id=False).shape[
-            0
-        ]
-        return ood_grads + id_grads
-    else:
-        return ood_grads
+    try:
+        dataset = zarr.open(input_path)
+        ood_grads = dataset["grads"].shape[0]
+        if experiment_cfg.id_dataset_name is not None:
+            id_grads = get_indices(
+                experiment_cfg.id_dataset_name, id=False
+            ).shape[0]
+            return ood_grads + id_grads
+        else:
+            return ood_grads
+    except Exception as e:
+        print(
+            f"Error loading dataset size from {input_path} for {experiment_cfg.name} {encoder_cfg.name} {experiment_cfg.ood_dataset_name}"
+        )
+        raise e
 
 
 def get_xtx(grads: Tensor, batch_size=20_000, progress=None) -> Tensor:
@@ -459,23 +464,24 @@ def featurize_no_id(
         k: (v * avg_out_to_loss).numpy() for k, v in avg_scores.items()
     }
 
-    store = zarr.DirectoryStore("/raid/pdpl/trak_scores.zarr")
-    root = zarr.group(store=store, overwrite=False)
+    root = zarr.open("/raid/pdpl/trak_scores.zarr", mode="a")
     exp_group = root.require_group(experiment_cfg.name)
     for target in targets:
         target_group = exp_group.require_group(target)
-        target_group.create_dataset(
+        arr = target_group.create_array(
             name="ood_scores",
-            data=final_scores[target],
             dtype=final_scores[target].dtype,
+            shape=final_scores[target].shape,
             overwrite=True,
         )
-        target_group.create_dataset(
+        arr[:] = final_scores[target]
+        arr = target_group.create_array(
             name="ood_uids",
-            data=uids,
             dtype=uids.dtype,
+            shape=uids.shape,
             overwrite=True,
         )
+        arr[:] = uids
 
 
 def main():

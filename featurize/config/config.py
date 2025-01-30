@@ -29,7 +29,7 @@ class EncoderConfig:
     url: Optional[str] = None
     precision: str = "pure_fp16"  # "amp"
     embedding_batch_size: int = 2_048
-    grad_batch_size: int = 48
+    grad_batch_size: int = 60
     model_id: int = 0
 
     def __post_init__(self):

@@ -12,13 +12,12 @@ import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 import torch
-from omegaconf import DictConfig
-from tqdm.auto import tqdm
-
 from compute_grads import Featurizer
 from config.config import EncoderConfig, ExperimentConfig, register_configs
 from data import give_dataset, give_dataset_size, give_embedding_dataset
 from model import Model
+from omegaconf import DictConfig
+from tqdm.auto import tqdm
 
 
 class JsonFormatter(logging.Formatter):
@@ -251,7 +250,7 @@ def process_combination(
                     output_path = f"{output_base_path}/{partition_base_name}_{current_partition}_{uuid.uuid4()}.parquet"
                     pq.write_table(combined_table, output_path)
                     print(
-                        f"Wrote partition {current_partition} with {len(accumulated_tables)} batches"
+                        f"Wrote partition {output_path} with {len(accumulated_tables)} batches"
                     )
 
                     current_partition += 1
@@ -265,7 +264,7 @@ def process_combination(
             output_path = f"{output_base_path}/{partition_base_name}_{current_partition}_final_{uuid.uuid4()}.parquet"
             pq.write_table(combined_table, output_path)
             print(
-                f"Wrote final partition {current_partition} with {len(accumulated_tables)} batches"
+                f"Wrote final partition {output_path} with {len(accumulated_tables)} batches"
             )
 
 
