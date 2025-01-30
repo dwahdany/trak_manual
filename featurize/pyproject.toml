@@ -28,4 +28,4 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-training = { path = "../datacomp/training" }
+training = { path = "/git/datacomp/training" }
