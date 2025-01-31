@@ -181,9 +181,9 @@ def get_x_xtx_inv(
 def get_indices(target, id: bool):
     id_indices_zarr = zarr.open("/raid/pdpl/id_downstream_idx.zarr", mode="r")
     if id:
-        return id_indices_zarr[target]["id_indices"][:]
+        return id_indices_zarr[target]["id_indices"][:].astype(int)
     else:
-        return id_indices_zarr[target]["downstream_indices"][:]
+        return id_indices_zarr[target]["downstream_indices"][:].astype(int)
 
 
 def featurize_with_id(cfg, experiment_cfg):
