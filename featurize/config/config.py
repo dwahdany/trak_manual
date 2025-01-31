@@ -12,7 +12,7 @@ class DatasetConfig:
     num_workers: int = 16
     splittable: bool = True
     custom: bool = False
-    # num_samples: Optional[int] = None
+    num_samples: Optional[int] = None
 
     def __post_init__(self):
         if self.uri is not None and self.uris is not None:
@@ -28,7 +28,7 @@ class EncoderConfig:
     path: Optional[str] = None
     url: Optional[str] = None
     precision: str = "pure_fp16"  # "amp"
-    embedding_batch_size: int = 2_048
+    embedding_batch_size: int = 4_096
     grad_batch_size: int = 60
     model_id: int = 0
 
@@ -97,37 +97,37 @@ class Config:
         default_factory=lambda: {
             "commonpool": DatasetConfig(
                 uri="/datasets/datacomp/shards/{00000000..00001287}.tar",
-                # num_samples=10367394,
+                num_samples=10367394,
             ),
             "pcam": DatasetConfig(
                 uri="/datasets/pcam/shards/pcam-train-{000000..000262}.tar",
                 custom=True,
-                # num_samples=262144,
+                num_samples=262144,
             ),
             "fairvision/amd": DatasetConfig(
                 uri="/datasets/fairvision/AMD/shards/amd-train-{000000..000005}.tar",
                 custom=True,
-                # num_samples=6000,
+                num_samples=6000,
             ),
             "fairvision/glaucoma": DatasetConfig(
                 uri="/datasets/fairvision/Glaucoma/shards/glaucoma-train-{000000..000005}.tar",
                 custom=True,
-                # num_samples=6000,
+                num_samples=6000,
             ),
             "fairvision/dr": DatasetConfig(
                 uri="/datasets/fairvision/DR/shards/dr-train-{000000..000005}.tar",
                 custom=True,
-                # num_samples=6000,
+                num_samples=6000,
             ),
             "fitzpatrick17k": DatasetConfig(
                 uri="/datasets/fitzpatrick17k/shards/fitzpatrick17k-train-{000000..000012}.tar",
                 custom=True,
-                # num_samples=12858,
+                num_samples=12858,
             ),
             "food101": DatasetConfig(
                 uri="/datasets/food101/shards/food101-train-{000000..000075}.tar",
                 custom=True,
-                # num_samples=75750,
+                num_samples=75750,
             ),
             "cifar100": DatasetConfig(
                 uri="/datasets/cifar100/shards/cifar100-train-{000000..000049}.tar",
