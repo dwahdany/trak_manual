@@ -16,7 +16,11 @@ from rich.progress import (
 )
 from torch import Tensor
 
-from config.config import Config, create_downstream_experiment
+from config.config import (  # noqa
+    Config,
+    ExperimentConfig,
+    create_downstream_experiment,
+)
 
 DEBUG = False
 
@@ -195,6 +199,8 @@ def featurize_with_id(cfg, experiment_cfg):
     avg_out_to_loss = ch.zeros(train_dataset_size, device="cpu")
     avg_scores = ch.zeros(train_dataset_size, device="cpu")
 
+    id_uids = None
+
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -255,6 +261,10 @@ def featurize_with_id(cfg, experiment_cfg):
 
             out_to_loss_id = out_to_loss_target[mask]
             g_train_pt = ch.cat([g, g_target[mask]])
+            if id_uids is None:
+                id_uids = uids_target[mask]
+            else:
+                assert np.array_equal(id_uids, uids_target[mask])
             out_to_loss_train = np.concatenate(
                 [out_to_loss_ood, out_to_loss_id]
             )
@@ -301,11 +311,8 @@ def featurize_with_id(cfg, experiment_cfg):
     if not DEBUG:
         store = zarr.open("/raid/pdpl/trak_scores.zarr", mode="a")
         exp_group = store.require_group(experiment_cfg.name)
-        encoder_group = exp_group.require_group(encoder_cfg.name)
 
-        target_group = encoder_group.require_group(
-            experiment_cfg.id_dataset_name
-        )
+        target_group = exp_group.require_group(experiment_cfg.id_dataset_name)
         arr = target_group.create_array(
             name="ood_scores",
             shape=ood_scores.shape,
@@ -314,12 +321,26 @@ def featurize_with_id(cfg, experiment_cfg):
         )
         arr[:] = ood_scores
         arr = target_group.create_array(
+            name="ood_uids",
+            shape=uids.shape,
+            dtype=uids.dtype,
+            overwrite=True,
+        )
+        arr[:] = uids
+        arr = target_group.create_array(
             name="id_scores",
             shape=id_scores.shape,
             dtype=id_scores.dtype,
             overwrite=True,
         )
         arr[:] = id_scores
+        arr = target_group.create_array(
+            name="id_uids",
+            shape=id_uids.shape,
+            dtype=id_uids.dtype,
+            overwrite=True,
+        )
+        arr[:] = id_uids
 
 
 def featurize_no_id(
@@ -455,8 +476,8 @@ def featurize_no_id(
 
 def main():
     cfg = Config()
-    # cfg.experiments = [ExperimentConfig(name="raw")]
-    cfg.experiments = [create_downstream_experiment("food101")]
+    cfg.experiments = [ExperimentConfig(name="raw")]
+    # cfg.experiments = [create_downstream_experiment("food101")]
     pprint(cfg)
     for experiment_cfg in cfg.experiments:
         if experiment_cfg.id_dataset_name is not None:
