@@ -1,11 +1,12 @@
+import sys
 from pathlib import Path
+
+sys.path.append(str(Path(__file__).parents[1]))  # Add parent directory to path
 from pprint import pprint
 
 import numpy as np
-import pyarrow.dataset as ds
 import torch as ch
 import zarr
-from config.config import Config, ExperimentConfig
 from rich.progress import (
     BarColumn,
     Progress,
@@ -14,6 +15,8 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 from torch import Tensor
+
+from config.config import Config, create_downstream_experiment
 
 DEBUG = False
 
@@ -106,7 +109,7 @@ def load_dataset_size(cfg, experiment_cfg, encoder_cfg):
         ood_grads = dataset["grads"].shape[0]
         if experiment_cfg.id_dataset_name is not None:
             id_grads = get_indices(
-                experiment_cfg.id_dataset_name, id=False
+                experiment_cfg.id_dataset_name, id=True
             ).shape[0]
             return ood_grads + id_grads
         else:
@@ -175,12 +178,12 @@ def get_x_xtx_inv(
     return result.to(dtype=grads.dtype)
 
 
-def get_indices(target, id: bool = True):
+def get_indices(target, id: bool):
     id_indices_zarr = zarr.open("/raid/pdpl/id_downstream_idx.zarr", mode="r")
     if id:
-        return id_indices_zarr[target]["id_indices"]
+        return id_indices_zarr[target]["id_indices"][:]
     else:
-        return id_indices_zarr[target]["downstream_indices"]
+        return id_indices_zarr[target]["downstream_indices"][:]
 
 
 def featurize_with_id(cfg, experiment_cfg):
@@ -208,47 +211,26 @@ def featurize_with_id(cfg, experiment_cfg):
             uids, g, out_to_loss_ood = load_ood_grads(
                 cfg, experiment_cfg, encoder_cfg, progress=progress
             )
-            assert len(g) == train_dataset_size - len(id_indices)
-            assert len(out_to_loss_ood) == train_dataset_size - len(id_indices)
+            assert len(g) == train_dataset_size - len(id_indices), (
+                f"{len(g)} doesnt match {train_dataset_size} - {len(id_indices)}"
+            )
+            assert len(out_to_loss_ood) == train_dataset_size - len(
+                id_indices
+            ), (
+                f"{len(out_to_loss_ood)} doesnt match {train_dataset_size} - {len(id_indices)}"
+            )
 
-            input_path = str(
+            input_path = (
                 Path(cfg.output_dir)
                 / experiment_cfg.name
                 / encoder_cfg.name
                 / experiment_cfg.id_dataset_name
             )
-            dataset_target = ds.dataset(input_path, format="parquet")
-            batch_size = 16384
-            scanner = dataset_target.scanner(
-                columns=["grads", "uid"], batch_size=batch_size
-            )
-            grads_list = []
-            uids_list = []
+            dataset_target = zarr.open(str(input_path / "data.zarr"), mode="r")
+            uids_target = dataset_target["uid"][:]
+            g_target = dataset_target["grads"][:]
+            out_to_loss_target = dataset_target["loss_grads"][:]
 
-            out_to_loss_list = []
-
-            batch_task = progress.add_task(
-                f"Loading batches for {experiment_cfg.id_dataset_name}...",
-                total=dataset_target.count_rows() // batch_size,
-            )
-
-            for batch in scanner.to_batches():
-                grads_list.extend(
-                    batch.column("grads").to_numpy(zero_copy_only=False)
-                )
-                uids_list.extend(
-                    batch.column("uid").to_numpy(zero_copy_only=False)
-                )
-                out_to_loss_list.extend(
-                    batch.column("loss_grads").to_numpy(zero_copy_only=False)
-                )
-                progress.advance(batch_task)
-
-            progress.remove_task(batch_task)
-
-            g_target = np.stack(grads_list)
-            uids_target = np.stack(uids_list)
-            out_to_loss_target = np.stack(out_to_loss_list)
             dtype = [
                 ("uids", uids_target.dtype),
                 ("grads", g_target.dtype, g_target.shape[1]),
@@ -264,6 +246,9 @@ def featurize_with_id(cfg, experiment_cfg):
             out_to_loss_target = combined["out_to_loss"]
 
             mask = np.isin(uids_target, id_indices)
+            print(
+                f" {mask.mean() * 100:.2f}% are ID for {experiment_cfg.id_dataset_name}"
+            )
 
             out_to_loss_id = out_to_loss_target[mask]
             g_train_pt = ch.cat([g, g_target[mask]])
@@ -391,42 +376,22 @@ def featurize_no_id(
             )
 
             for target in targets:
-                input_path = str(
+                input_path = (
                     Path(cfg.output_dir)
                     / cfg.experiments[0].name
                     / encoder_cfg.name
                     / target
                 )
-                dataset_target = ds.dataset(input_path, format="parquet")
-                batch_size = 16384
-                scanner = dataset_target.scanner(
-                    columns=["grads", "uid"], batch_size=batch_size
+                dataset_target = zarr.open(
+                    str(input_path / "data.zarr"), mode="r"
                 )
-                grads_list = []
-                uids_list = []
-
-                batch_task = progress.add_task(
-                    f"Loading batches for {target}...",
-                    total=dataset_target.count_rows() // batch_size,
-                )
-
-                for batch in scanner.to_batches():
-                    grads_list.extend(
-                        batch.column("grads").to_numpy(zero_copy_only=False)
-                    )
-                    uids_list.extend(
-                        batch.column("uid").to_numpy(zero_copy_only=False)
-                    )
-                    progress.advance(batch_task)
-
-                progress.remove_task(batch_task)
-
-                g_target = np.stack(grads_list)
-                uids_target = np.stack(uids_list)
+                g_target = dataset_target["grads"][:]
+                uids_target = dataset_target["uid"][:]
                 id_indices = get_indices(
                     target, id=False
                 )  # get downstream indices
                 mask = np.isin(uids_target, id_indices)
+                print(f" {mask.mean() * 100:.2f}% are ID for {target}")
                 g_target_pt = ch.tensor(
                     g_target[mask], device="cpu"
                 ).pin_memory()
@@ -486,7 +451,8 @@ def featurize_no_id(
 
 def main():
     cfg = Config()
-    cfg.experiments = [ExperimentConfig(name="raw")]
+    # cfg.experiments = [ExperimentConfig(name="raw")]
+    cfg.experiments = [create_downstream_experiment("food101")]
     pprint(cfg)
     for experiment_cfg in cfg.experiments:
         if experiment_cfg.id_dataset_name is not None:

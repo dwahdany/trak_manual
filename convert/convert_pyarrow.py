@@ -1,11 +1,15 @@
+import sys
 from pathlib import Path
+
+sys.path.append(str(Path(__file__).parents[1]))  # Add parent directory to path
 from pprint import pprint
 
 import numpy as np
 import pyarrow.dataset as ds
 import zarr
-from config.config import Config
 from rich.progress import Progress
+
+from config.config import Config
 
 cfg = Config()
 pprint(cfg)
@@ -36,6 +40,7 @@ with Progress() as progress:
         for encoder_cfg in experiment_cfg.encoders:
             targets = experiment_cfg.target_datasets
             for target in targets:
+                dataset_cfg = cfg.datasets[target]
                 input_path = str(
                     Path(cfg.output_dir)
                     / experiment_cfg.name
@@ -84,12 +89,10 @@ with Progress() as progress:
                     table = table.take(unique_indices)
 
                 print(f"Got {len(uids)} unique UIDs")
-                if "num_samples" in cfg.datasets[target]:
-                    if len(uids) != (
-                        expected_num_samples := cfg.datasets[
-                            target
-                        ].num_samples
-                    ):
+                if (
+                    expected_num_samples := dataset_cfg.num_samples
+                ) is not None:
+                    if len(uids) != expected_num_samples:
                         print(
                             f"WARNING: Expected {expected_num_samples} UIDs, got {len(uids)}. Skipping."
                         )
