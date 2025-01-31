@@ -211,14 +211,15 @@ def featurize_with_id(cfg, experiment_cfg):
             uids, g, out_to_loss_ood = load_ood_grads(
                 cfg, experiment_cfg, encoder_cfg, progress=progress
             )
-            assert len(g) == train_dataset_size - len(id_indices), (
-                f"{len(g)} doesnt match {train_dataset_size} - {len(id_indices)}"
-            )
-            assert len(out_to_loss_ood) == train_dataset_size - len(
-                id_indices
-            ), (
-                f"{len(out_to_loss_ood)} doesnt match {train_dataset_size} - {len(id_indices)}"
-            )
+            if not DEBUG:
+                assert len(g) == train_dataset_size - len(id_indices), (
+                    f"{len(g)} doesnt match {train_dataset_size} - {len(id_indices)}"
+                )
+                assert len(out_to_loss_ood) == train_dataset_size - len(
+                    id_indices
+                ), (
+                    f"{len(out_to_loss_ood)} doesnt match {train_dataset_size} - {len(id_indices)}"
+                )
 
             input_path = (
                 Path(cfg.output_dir)
@@ -227,7 +228,7 @@ def featurize_with_id(cfg, experiment_cfg):
                 / experiment_cfg.id_dataset_name
             )
             dataset_target = zarr.open(str(input_path / "data.zarr"), mode="r")
-            uids_target = dataset_target["uid"][:]
+            uids_target = dataset_target["uid"][:].astype(int)
             g_target = dataset_target["grads"][:]
             out_to_loss_target = dataset_target["loss_grads"][:]
 
@@ -242,8 +243,10 @@ def featurize_with_id(cfg, experiment_cfg):
             combined["out_to_loss"] = out_to_loss_target
             combined.sort(order="uids")
             uids_target = combined["uids"]
-            g_target = combined["grads"]
-            out_to_loss_target = combined["out_to_loss"]
+            g_target = ch.from_numpy(combined["grads"]).pin_memory()
+            out_to_loss_target = ch.from_numpy(
+                combined["out_to_loss"]
+            ).pin_memory()
 
             mask = np.isin(uids_target, id_indices)
             print(
@@ -295,27 +298,28 @@ def featurize_with_id(cfg, experiment_cfg):
     final_scores = (avg_scores * avg_out_to_loss).numpy()
     ood_scores = final_scores[: train_dataset_size - len(id_indices)]
     id_scores = final_scores[train_dataset_size - len(id_indices) :]
+    if not DEBUG:
+        store = zarr.open("/raid/pdpl/trak_scores.zarr", mode="a")
+        exp_group = store.require_group(experiment_cfg.name)
+        encoder_group = exp_group.require_group(encoder_cfg.name)
 
-    # Create the zarr store
-    store = zarr.open("/raid/pdpl/trak_scores.zarr", mode="a")
-
-    # Get or create groups
-    exp_group = store.require_group(experiment_cfg.name)
-    encoder_group = exp_group.require_group(encoder_cfg.name)
-
-    target_group = encoder_group.require_group(experiment_cfg.id_dataset_name)
-    target_group.create_dataset(
-        name="ood_scores",
-        data=ood_scores,
-        dtype=ood_scores.dtype,
-        overwrite=True,
-    )
-    target_group.create_dataset(
-        name="id_scores",
-        data=id_scores,
-        dtype=id_scores.dtype,
-        overwrite=True,
-    )
+        target_group = encoder_group.require_group(
+            experiment_cfg.id_dataset_name
+        )
+        arr = target_group.create_array(
+            name="ood_scores",
+            shape=ood_scores.shape,
+            dtype=ood_scores.dtype,
+            overwrite=True,
+        )
+        arr[:] = ood_scores
+        arr = target_group.create_array(
+            name="id_scores",
+            shape=id_scores.shape,
+            dtype=id_scores.dtype,
+            overwrite=True,
+        )
+        arr[:] = id_scores
 
 
 def featurize_no_id(
@@ -386,12 +390,12 @@ def featurize_no_id(
                     str(input_path / "data.zarr"), mode="r"
                 )
                 g_target = dataset_target["grads"][:]
-                uids_target = dataset_target["uid"][:]
-                id_indices = get_indices(
+                uids_target = dataset_target["uid"][:].astype(int)
+                downstream_indices = get_indices(
                     target, id=False
                 )  # get downstream indices
-                mask = np.isin(uids_target, id_indices)
-                print(f" {mask.mean() * 100:.2f}% are ID for {target}")
+                mask = np.isin(uids_target, downstream_indices)
+                print(f" {mask.mean() * 100:.2f}% are downstream for {target}")
                 g_target_pt = ch.tensor(
                     g_target[mask], device="cpu"
                 ).pin_memory()
@@ -415,7 +419,6 @@ def featurize_no_id(
                 progress.remove_task(score_task)
                 scores = ch.cat(scores)
                 avg_scores[target] += scores
-                # all_scores[target] = scores.cpu()
                 progress.advance(target_task)
 
             progress.remove_task(target_task)
@@ -429,24 +432,25 @@ def featurize_no_id(
         k: (v * avg_out_to_loss).numpy() for k, v in avg_scores.items()
     }
 
-    root = zarr.open("/raid/pdpl/trak_scores.zarr", mode="a")
-    exp_group = root.require_group(experiment_cfg.name)
-    for target in targets:
-        target_group = exp_group.require_group(target)
-        arr = target_group.create_array(
-            name="ood_scores",
-            dtype=final_scores[target].dtype,
-            shape=final_scores[target].shape,
-            overwrite=True,
-        )
-        arr[:] = final_scores[target]
-        arr = target_group.create_array(
-            name="ood_uids",
-            dtype=uids.dtype,
-            shape=uids.shape,
-            overwrite=True,
-        )
-        arr[:] = uids
+    if not DEBUG:
+        root = zarr.open("/raid/pdpl/trak_scores.zarr", mode="a")
+        exp_group = root.require_group(experiment_cfg.name)
+        for target in targets:
+            target_group = exp_group.require_group(target)
+            arr = target_group.create_array(
+                name="ood_scores",
+                dtype=final_scores[target].dtype,
+                shape=final_scores[target].shape,
+                overwrite=True,
+            )
+            arr[:] = final_scores[target]
+            arr = target_group.create_array(
+                name="ood_uids",
+                dtype=uids.dtype,
+                shape=uids.shape,
+                overwrite=True,
+            )
+            arr[:] = uids
 
 
 def main():
