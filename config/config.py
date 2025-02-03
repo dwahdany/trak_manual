@@ -45,13 +45,13 @@ class ExperimentConfig:
     target_datasets: List[str] = field(
         default_factory=lambda: [
             "commonpool",
-            # "fairvision/AMD",
+            "fairvision/amd",
             # "fairvision/Glaucoma",
             # "fairvision/DR",
             # "fitzpatrick17k",
-            # "Food101",
-            # "pcam",
-            # "CIFAR100",
+            "food101",
+            "pcam",
+            "cifar100",
             # "STL10",
         ],
     )
