@@ -21,7 +21,6 @@ dependencies = [
     "torchvision>=0.20.1",
     "tqdm>=4.67.1",
     "training",
-    "traker[fast]>=0.3.2",
     "webdataset>=0.2.100",
     "zarr>=3",
 ]
