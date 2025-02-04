@@ -201,6 +201,14 @@ def featurize_with_id(cfg, experiment_cfg):
 
     id_uids = None
 
+    # Track which files need done markers
+    done_files_to_create = set()
+
+    done_file = Path(cfg.output_dir) / experiment_cfg.name / "scores.done"
+    if done_file.exists():
+        print("All targets already processed. Skipping.")
+        return
+
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -300,7 +308,6 @@ def featurize_with_id(cfg, experiment_cfg):
             progress.remove_task(score_task)
             scores_downstream = ch.cat(scores_downstream)
             avg_scores += scores_downstream
-
             progress.advance(encoder_task)
 
     avg_out_to_loss /= len(experiment_cfg.encoders)
@@ -309,10 +316,12 @@ def featurize_with_id(cfg, experiment_cfg):
     ood_scores = final_scores[: train_dataset_size - len(id_indices)]
     id_scores = final_scores[train_dataset_size - len(id_indices) :]
     if not DEBUG:
+        # Save all scores first
         store = zarr.open("/raid/pdpl/trak_scores.zarr", mode="a")
         exp_group = store.require_group(experiment_cfg.name)
-
         target_group = exp_group.require_group(experiment_cfg.id_dataset_name)
+
+        # Create and fill arrays
         arr = target_group.create_array(
             name="ood_scores",
             shape=ood_scores.shape,
@@ -321,10 +330,7 @@ def featurize_with_id(cfg, experiment_cfg):
         )
         arr[:] = ood_scores
         arr = target_group.create_array(
-            name="ood_uids",
-            shape=uids.shape,
-            dtype=uids.dtype,
-            overwrite=True,
+            name="ood_uids", shape=uids.shape, dtype=uids.dtype, overwrite=True
         )
         arr[:] = uids
         arr = target_group.create_array(
@@ -342,6 +348,10 @@ def featurize_with_id(cfg, experiment_cfg):
         )
         arr[:] = id_uids
 
+        # Create all done files after successful save
+        for done_file in done_files_to_create:
+            done_file.touch()
+
 
 def featurize_no_id(
     cfg,
@@ -351,16 +361,36 @@ def featurize_no_id(
     train_dataset_size = load_dataset_size(
         cfg, experiment_cfg, experiment_cfg.encoders[0]
     )
-    targets = [
+    all_targets = [
         "pcam",
-        # "fitzpatrick17k",
-        # "fairvision/dr",
         "fairvision/amd",
-        # "fairvision/glaucoma",
         "food101",
         "cifar100",
-        # "stl10",
     ]
+
+    # Filter out completed targets
+    targets = []
+    root = zarr.open("/raid/pdpl/trak_scores.zarr", mode="a")
+    exp_group = root.require_group(experiment_cfg.name)
+    for target in all_targets:
+        all_done = True
+        for encoder_cfg in cfg.experiments[0].encoders:
+            target_group = exp_group.require_group(target)
+            if (
+                "ood_scores" not in target_group
+                or "ood_uids" not in target_group
+            ):
+                all_done = False
+                break
+        if not all_done:
+            targets.append(target)
+
+    if not targets:
+        print("All targets already processed. Skipping.")
+        return
+
+    print(f"Processing remaining targets: {targets}")
+
     avg_out_to_loss = ch.zeros(train_dataset_size, device="cpu")
     avg_scores = {
         k: ch.zeros(train_dataset_size, device="cpu") for k in targets
@@ -380,7 +410,6 @@ def featurize_no_id(
         )
 
         for encoder_cfg in cfg.experiments[0].encoders:
-            # all_scores = {}
             uids, g, out_to_loss = load_ood_grads(
                 cfg, cfg.experiments[0], encoder_cfg, progress=progress
             )
@@ -476,7 +505,7 @@ def featurize_no_id(
 
 def main():
     cfg = Config()
-    cfg.experiments = [ExperimentConfig(name="raw")]
+    # cfg.experiments = [ExperimentConfig(name="raw")]
     # cfg.experiments = [create_downstream_experiment("food101")]
     pprint(cfg)
     for experiment_cfg in cfg.experiments:
