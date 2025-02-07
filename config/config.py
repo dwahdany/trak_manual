@@ -46,12 +46,13 @@ class ExperimentConfig:
         default_factory=lambda: [
             "commonpool",
             "fairvision/amd",
-            # "fairvision/Glaucoma",
-            # "fairvision/DR",
-            # "fitzpatrick17k",
+            "fairvision/glaucoma",
+            "fairvision/dr",
+            "fitzpatrick17k",
             "food101",
             "pcam",
             "cifar100",
+            # "fmow",
             # "STL10",
         ],
     )
