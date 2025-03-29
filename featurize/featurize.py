@@ -112,9 +112,7 @@ def load_dataset_size(cfg, experiment_cfg, encoder_cfg):
         dataset = zarr.open(input_path)
         ood_grads = dataset["grads"].shape[0]
         if experiment_cfg.id_dataset_name is not None:
-            id_grads = get_indices(
-                experiment_cfg.id_dataset_name, id=True
-            ).shape[0]
+            id_grads = get_indices(experiment_cfg.id_dataset_name, id=True).shape[0]
             return ood_grads + id_grads
         else:
             return ood_grads
@@ -132,9 +130,7 @@ def get_xtx(grads: Tensor, batch_size=20_000, progress=None) -> Tensor:
 
     # Use progress.track if progress bar is provided, otherwise use regular iteration
     iterator = (
-        progress.track(blocks, description="Computing XTX")
-        if progress
-        else blocks
+        progress.track(blocks, description="Computing XTX") if progress else blocks
     )
     for block in iterator:
         result += block.T.to("cuda") @ block.to("cuda")
@@ -229,9 +225,7 @@ def featurize_with_id(cfg, experiment_cfg):
                 assert len(g) == train_dataset_size - len(id_indices), (
                     f"{len(g)} doesnt match {train_dataset_size} - {len(id_indices)}"
                 )
-                assert len(out_to_loss_ood) == train_dataset_size - len(
-                    id_indices
-                ), (
+                assert len(out_to_loss_ood) == train_dataset_size - len(id_indices), (
                     f"{len(out_to_loss_ood)} doesnt match {train_dataset_size} - {len(id_indices)}"
                 )
 
@@ -258,9 +252,7 @@ def featurize_with_id(cfg, experiment_cfg):
             combined.sort(order="uids")
             uids_target = combined["uids"]
             g_target = ch.from_numpy(combined["grads"]).pin_memory()
-            out_to_loss_target = ch.from_numpy(
-                combined["out_to_loss"]
-            ).pin_memory()
+            out_to_loss_target = ch.from_numpy(combined["out_to_loss"]).pin_memory()
 
             mask = np.isin(uids_target, id_indices)
             print(
@@ -273,21 +265,15 @@ def featurize_with_id(cfg, experiment_cfg):
                 id_uids = uids_target[mask]
             else:
                 assert np.array_equal(id_uids, uids_target[mask])
-            out_to_loss_train = np.concatenate(
-                [out_to_loss_ood, out_to_loss_id]
-            )
+            out_to_loss_train = np.concatenate([out_to_loss_ood, out_to_loss_id])
             avg_out_to_loss += out_to_loss_train
 
-            xtx = get_xtx(
-                ch.tensor(g_train_pt, device="cpu"), progress=progress
-            )
+            xtx = get_xtx(ch.tensor(g_train_pt, device="cpu"), progress=progress)
             x_xtx_inv = get_x_xtx_inv(
                 ch.tensor(g_train_pt, device="cpu"), xtx, progress=progress
             )
             features = x_xtx_inv.pin_memory()
-            g_downstream_pt = ch.tensor(
-                g_target[~mask], device="cpu"
-            ).pin_memory()
+            g_downstream_pt = ch.tensor(g_target[~mask], device="cpu").pin_memory()
 
             batch_size = 8192 * 2
             scores_downstream = []
@@ -299,9 +285,7 @@ def featurize_with_id(cfg, experiment_cfg):
 
             for i in range(0, len(features), batch_size):
                 batch = features[i : i + batch_size].cuda()
-                batch_scores = ch.mean(
-                    batch @ g_downstream_pt.cuda().T, axis=1
-                )
+                batch_scores = ch.mean(batch @ g_downstream_pt.cuda().T, axis=1)
                 scores_downstream.append(batch_scores.cpu())
                 progress.advance(score_task)
 
@@ -376,10 +360,7 @@ def featurize_no_id(
         all_done = True
         for encoder_cfg in cfg.experiments[0].encoders:
             target_group = exp_group.require_group(target)
-            if (
-                "ood_scores" not in target_group
-                or "ood_uids" not in target_group
-            ):
+            if "ood_scores" not in target_group or "ood_uids" not in target_group:
                 all_done = False
                 break
         if not all_done:
@@ -392,9 +373,7 @@ def featurize_no_id(
     print(f"Processing remaining targets: {targets}")
 
     avg_out_to_loss = ch.zeros(train_dataset_size, device="cpu")
-    avg_scores = {
-        k: ch.zeros(train_dataset_size, device="cpu") for k in targets
-    }
+    avg_scores = {k: ch.zeros(train_dataset_size, device="cpu") for k in targets}
     uids = None
 
     with Progress(
@@ -436,9 +415,7 @@ def featurize_no_id(
                     / encoder_cfg.name
                     / target
                 )
-                dataset_target = zarr.open(
-                    str(input_path / "data.zarr"), mode="r"
-                )
+                dataset_target = zarr.open(str(input_path / "data.zarr"), mode="r")
                 g_target = dataset_target["grads"][:]
                 uids_target = dataset_target["uid"][:].astype(int)
                 downstream_indices = get_indices(
@@ -446,9 +423,7 @@ def featurize_no_id(
                 )  # get downstream indices
                 mask = np.isin(uids_target, downstream_indices)
                 print(f" {mask.mean() * 100:.2f}% are downstream for {target}")
-                g_target_pt = ch.tensor(
-                    g_target[mask], device="cpu"
-                ).pin_memory()
+                g_target_pt = ch.tensor(g_target[mask], device="cpu").pin_memory()
 
                 batch_size = 8192 * 2
                 scores = []
@@ -460,9 +435,7 @@ def featurize_no_id(
 
                 for i in range(0, len(features), batch_size):
                     batch = features[i : i + batch_size].cuda()
-                    batch_scores = ch.mean(
-                        batch @ g_target_pt.cuda().T, axis=1
-                    )
+                    batch_scores = ch.mean(batch @ g_target_pt.cuda().T, axis=1)
                     scores.append(batch_scores.cpu())
                     progress.advance(score_task)
 
@@ -478,9 +451,7 @@ def featurize_no_id(
     avg_scores = {
         k: v / len(cfg.experiments[0].encoders) for k, v in avg_scores.items()
     }
-    final_scores = {
-        k: (v * avg_out_to_loss).numpy() for k, v in avg_scores.items()
-    }
+    final_scores = {k: (v * avg_out_to_loss).numpy() for k, v in avg_scores.items()}
 
     if not DEBUG:
         root = zarr.open("/raid/pdpl/trak_scores.zarr", mode="a")
