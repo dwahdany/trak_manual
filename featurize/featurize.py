@@ -16,6 +16,7 @@ from rich.progress import (
 )
 from torch import Tensor
 
+from dask import array as da
 from config.config import (  # noqa
     Config,
     ExperimentConfig,
@@ -38,58 +39,26 @@ def load_ood_grads(cfg, experiment_cfg, encoder_cfg, progress=None):
         / experiment_cfg.ood_dataset_name
         / "data.zarr"
     )
-    dataset = zarr.open(input_path)
 
-    zarr_chunk_size = dataset["uid"].chunks[0]
-    chunk_size = zarr_chunk_size * 10
-    total_size = dataset["uid"].shape[0] if not DEBUG else 1000
-    chunks = []
-    if progress is not None:
-        chunk_task = progress.add_task(
-            "Loading chunks...",
-            total=(total_size + chunk_size - 1) // chunk_size,
-        )
-
-    for start_idx in range(0, total_size, chunk_size):
-        end_idx = min(start_idx + chunk_size, total_size)
-
-        # Load chunk data
-        uids_chunk = dataset["uid"][start_idx:end_idx].astype("U32")
-        g_chunk = dataset["grads"][start_idx:end_idx]
-        out_to_loss_chunk = dataset["loss_grads"][start_idx:end_idx]
-
-        # Create structured array for this chunk
-        dtype = [
-            ("uids", uids_chunk.dtype),
-            ("grads", g_chunk.dtype, g_chunk.shape[1]),
-            ("loss_grads", out_to_loss_chunk.dtype),
-        ]
-        chunk = np.empty(len(uids_chunk), dtype=dtype)
-        chunk["uids"] = uids_chunk
-        chunk["grads"] = g_chunk
-        chunk["loss_grads"] = out_to_loss_chunk
-        chunks.append(chunk)
-
-        if progress is not None:
-            progress.advance(chunk_task)
-
-    if progress is not None:
-        progress.remove_task(chunk_task)
+    grads = da.from_zarr(input_path + "/grads")
+    loss_grads = da.from_zarr(input_path + "/loss_grads")
+    uids = da.from_zarr(input_path + "/uid").astype("U32")
+    uids, grads, loss_grads = da.compute(uids, grads, loss_grads)
 
     if progress is not None:
         progress.advance(load_task)
 
-    # Merge and sort chunks
-    combined = np.concatenate(chunks)
-    combined.sort(order="uids")
+    if np.any(uids[:-1] > uids[1:]):
+        print("Sorting required.")
+        sort_idx = uids.argsort()
+        uids, grads, loss_grads = uids[sort_idx], grads[sort_idx], loss_grads[sort_idx]
 
     if progress is not None:
         progress.advance(load_task)
 
     # Extract arrays using buffer protocol to avoid extra copies
-    uids = combined["uids"]
-    g = ch.from_numpy(combined["grads"]).pin_memory()
-    out_to_loss = ch.from_numpy(combined["loss_grads"]).pin_memory()
+    g = ch.from_numpy(grads).pin_memory()
+    out_to_loss = ch.from_numpy(loss_grads).pin_memory()
 
     if progress is not None:
         progress.advance(load_task)
