@@ -1,4 +1,4 @@
 #!/bin/bash
-uv pip install -r requirements.txt
+uv sync 
 uv pip install fast-jl --no-build-isolation
 uv pip install traker[fast]
