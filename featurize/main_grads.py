@@ -13,11 +13,17 @@ import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 import torch
 from compute_grads import Featurizer
-from config.config import EncoderConfig, ExperimentConfig, register_configs
 from data import give_dataset, give_dataset_size, give_embedding_dataset
 from model import Model
 from omegaconf import DictConfig
 from tqdm.auto import tqdm
+
+from config.config import (
+    EncoderConfig,
+    ExperimentConfig,
+    create_raw_experiments,
+    register_configs,
+)
 
 
 class JsonFormatter(logging.Formatter):
@@ -66,15 +72,17 @@ def check_if_done(
             continue
 
         if os.path.exists(output_base_path):
-            parquet_files = glob.glob(
-                os.path.join(output_base_path, "*.parquet")
-            )
+            parquet_files = glob.glob(os.path.join(output_base_path, "*.parquet"))
+            if len(parquet_files) == 0:
+                print(
+                    f"No parquet files found for {dataset_name} with encoder {encoder_cfg.name}"
+                )
+                return False
+            print("Scanning these files ... ")
+            print(parquet_files)
             dataset = ds.dataset(parquet_files, format="parquet")
             existing_uids = len(
-                dataset.scanner(columns=["uid"])
-                .to_table()
-                .column("uid")
-                .unique()
+                dataset.scanner(columns=["uid"]).to_table().column("uid").unique()
             )
 
             print(f"Existing uids: {existing_uids}")
@@ -113,9 +121,7 @@ def process_combination(
 ):
     model = Model(encoder_cfg, cfg.device, cfg.s3_endpoint_url)
     try:
-        model, tokenizer, _, preprocess_val = (
-            model.create_model_and_transforms()
-        )
+        model, tokenizer, _, preprocess_val = model.create_model_and_transforms()
     except Exception as e:
         print(f"Skipping {encoder_cfg.name} because of error: {e}")
         print("Traceback:")
@@ -144,9 +150,7 @@ def process_combination(
         tqdm(
             embeddings_dataset,
             desc="Computing embeddings",
-            total=cfg.num_contrastive_samples
-            // encoder_cfg.embedding_batch_size
-            + 1,
+            total=cfg.num_contrastive_samples // encoder_cfg.embedding_batch_size + 1,
         ),
         batch_size=encoder_cfg.embedding_batch_size,
         size=cfg.num_contrastive_samples,
@@ -159,6 +163,7 @@ def process_combination(
     gc.collect()
     torch.cuda.empty_cache()
 
+    print(f"Processing {encoder_cfg.name} for {experiment_cfg.target_datasets}")
     for dataset_name in experiment_cfg.target_datasets:
         output_base_path = f"{cfg.output_dir}/{experiment_cfg.name}/{encoder_cfg.name}/{dataset_name.lower()}"
         os.makedirs(output_base_path, exist_ok=True)
@@ -177,9 +182,7 @@ def process_combination(
         # Check for existing UIDs across all partitions
         existing_uids = set()
         if os.path.exists(output_base_path):
-            parquet_files = glob.glob(
-                os.path.join(output_base_path, "*.parquet")
-            )
+            parquet_files = glob.glob(os.path.join(output_base_path, "*.parquet"))
             dataset = ds.dataset(parquet_files, format="parquet")
             for batch in dataset.scanner().to_batches():
                 existing_uids.update(batch["uid"].to_pylist())
@@ -225,14 +228,10 @@ def process_combination(
             img = img.to("cuda").to(torch.float16)
             txt = txt.to("cuda")
 
-            grads, loss_grads, loss_img, loss_txt = featurizer.featurize(
-                (img, txt)
-            )
+            grads, loss_grads, loss_img, loss_txt = featurizer.featurize((img, txt))
             batch_data = {
                 "uid": uids,
-                "grads": [
-                    row.astype("float16") for row in grads.cpu().numpy()
-                ],
+                "grads": [row.astype("float16") for row in grads.cpu().numpy()],
                 "loss_grads": loss_grads.cpu().numpy().astype("float32"),
                 "loss_img": loss_img.cpu().numpy().astype("float32"),
                 "loss_txt": loss_txt.cpu().numpy().astype("float32"),
@@ -245,9 +244,7 @@ def process_combination(
             if (batch_idx + 1) % write_interval == 0:
                 if len(accumulated_tables) > 0:
                     combined_table = pa.concat_tables(accumulated_tables)
-                    combined_table = combined_table.replace_schema_metadata(
-                        metadata
-                    )
+                    combined_table = combined_table.replace_schema_metadata(metadata)
 
                     output_path = f"{output_base_path}/{partition_base_name}_{current_partition}_{uuid.uuid4()}.parquet"
                     pq.write_table(combined_table, output_path)
@@ -309,9 +306,7 @@ def run_worker(
         for encoder in tqdm(experiment.encoders, desc="Checking if done")
         if not check_if_done(cfg, experiment, encoder)
     ]
-    assignments = get_worker_assignments(
-        encoders, cfg.worker_id, cfg.worker_total
-    )
+    assignments = get_worker_assignments(encoders, cfg.worker_id, cfg.worker_total)
 
     if dry_run:
         return assignments
@@ -321,9 +316,7 @@ def run_worker(
             continue
 
         encoder_cfg = next(
-            e
-            for e in experiment.encoders
-            if e.name == assignment["encoder_name"]
+            e for e in experiment.encoders if e.name == assignment["encoder_name"]
         )
         process_combination(
             cfg=cfg,
