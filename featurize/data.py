@@ -69,9 +69,7 @@ class RandomMix(IterableDataset):
             iterator: An iterator that yields samples randomly from the datasets.
         """
         sources = [iter(d) for d in self.datasets]
-        return random_samples(
-            sources, self.probs, longest=self.longest, seed=self.seed
-        )
+        return random_samples(sources, self.probs, longest=self.longest, seed=self.seed)
 
 
 def give_worker_shards(
@@ -107,9 +105,7 @@ def give_worker_shards(
     if worker_id == worker_total - 1:
         # Last worker gets all remaining shards
         start_shard = next(
-            i
-            for i, c in enumerate(cumsum)
-            if c > worker_id * target_per_worker
+            i for i, c in enumerate(cumsum) if c > worker_id * target_per_worker
         )
         samples = (
             total_samples - cumsum[start_shard - 1]
@@ -125,9 +121,7 @@ def give_worker_shards(
         next_worker_start = target_per_worker * (worker_id + 1)
 
         start_shard = next(i for i, c in enumerate(cumsum) if c > worker_start)
-        end_shard = next(
-            i for i, c in enumerate(cumsum) if c > next_worker_start
-        )
+        end_shard = next(i for i, c in enumerate(cumsum) if c > next_worker_start)
 
         samples = cumsum[end_shard - 1] - (
             cumsum[start_shard - 1] if start_shard > 0 else 0
@@ -316,7 +310,7 @@ def give_custom_dataset(
         return filled_templates[int(label)]
 
     id_zarr = zarr.open("/raid/pdpl/id_downstream_idx.zarr", mode="r")
-    id_uids = set(id_zarr[task]["id_indices"])
+    id_uids = set(id_zarr[task]["id_indices"][:].tolist())
     selected_id_str = {f"{uid:08d}" for uid in id_uids}
 
     def id_filter(sample):
@@ -356,14 +350,11 @@ def give_embedding_dataset(
     )  # same constrastive samples on all workers
     if id_dataset_name is not None:
         id_dataset, indistribution_data_num_samples, id_filter, label_map = (
-            give_custom_dataset(
-                cfg, id_dataset_name=id_dataset_name, resampled=True
-            )
+            give_custom_dataset(cfg, id_dataset_name=id_dataset_name, resampled=True)
         )
 
         p_id = indistribution_data_num_samples / (
-            indistribution_data_num_samples
-            + give_number_of_samples(ood_dataset_cfg)
+            indistribution_data_num_samples + give_number_of_samples(ood_dataset_cfg)
         )
 
         probs = [1 - p_id, p_id]
@@ -419,9 +410,7 @@ def give_embedding_dataset(
                 }
             ),
             wds.rename(image="jpg;png;jpeg;webp", text="txt"),
-            wds.map_dict(
-                image=preprocess_val, text=lambda text: tokenizer(text)[0]
-            ),
+            wds.map_dict(image=preprocess_val, text=lambda text: tokenizer(text)[0]),
             wds.to_tuple("image", "text"),
             wds.batched(batch_size, partial=True),
         ]

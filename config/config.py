@@ -29,7 +29,7 @@ class EncoderConfig:
     url: Optional[str] = None
     precision: str = "pure_fp16"  # "amp"
     embedding_batch_size: int = 4_096
-    grad_batch_size: int = 60
+    grad_batch_size: int = 120
     model_id: int = 0
 
     def __post_init__(self):
@@ -146,12 +146,12 @@ class Config:
             ExperimentConfig(
                 name="raw",
             ),
-            create_downstream_experiment("cifar100"),
+            # create_downstream_experiment("cifar100"),
             # create_downstream_experiment("stl10"),
-            create_downstream_experiment("food101"),
+            # create_downstream_experiment("food101"),
             # create_downstream_experiment("fitzpatrick17k"),
-            create_downstream_experiment("pcam"),
-            create_downstream_experiment("fairvision/amd"),
+            # create_downstream_experiment("pcam"),
+            # create_downstream_experiment("fairvision/amd"),
             # create_downstream_experiment("fairvision/glaucoma"),
             # create_downstream_experiment("fairvision/dr"),
         ]
@@ -183,6 +183,21 @@ def create_downstream_experiment(name: str):
                 path=f"s3://pdpl/small_clip_checkpoints/curation/random/{name.replace('amd', 'AMD').replace('glaucoma', 'Glaucoma').replace('dr', 'DR')}/ratio_1.0/datacomp_v2/small_scale/checkpoints/epoch_5.pt",
                 model_id=2,
             ),
+        ],
+    )
+
+
+def create_raw_experiments(seeds: List[int]):
+    return ExperimentConfig(
+        name="raw",
+        encoders=[
+            EncoderConfig(
+                name=f"local_commonpool_s_s13m_b4k_{seed}",
+                architecture="ViT-B-32",
+                path=f"/raid/pdpl/small_clip_checkpoints/raw/datacomp_v{seed}/small_scale/checkpoints/epoch_5.pt",
+                model_id=seed,
+            )
+            for seed in seeds
         ],
     )
 

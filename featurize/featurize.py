@@ -329,7 +329,10 @@ def featurize_no_id(
         all_done = True
         for encoder_cfg in cfg.experiments[0].encoders:
             target_group = exp_group.require_group(target)
-            if "ood_scores" not in target_group or "ood_uids" not in target_group:
+            if (
+                "ood_scores" not in target_group
+                or "ood_uids" not in target_group
+            ):
                 all_done = False
                 break
         if not all_done:
