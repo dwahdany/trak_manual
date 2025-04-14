@@ -186,8 +186,10 @@ def process_combination(
 
         print(f"Existing uids: {len(existing_uids)}")
         if len(existing_uids) == give_dataset_size(cfg.datasets[dataset_name]):
-            print(f"Skipping {encoder_cfg.name} because it is already done")
-            return
+            print(
+                f"Skipping {encoder_cfg.name} for {dataset_name} because it is already done"
+            )
+            continue
         accumulated_tables = []
         write_interval = cfg.write_chunks
 
