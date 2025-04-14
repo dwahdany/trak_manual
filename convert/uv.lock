@@ -25,7 +25,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.2.2" },
     { name = "pyarrow", specifier = ">=19.0.0" },
     { name = "rich", specifier = ">=13.9.4" },
-    { name = "zarr", extras = ["array"], specifier = ">=3.0.1" },
+    { name = "zarr", specifier = ">=3.0.1" },
 ]
 
 [[package]]
