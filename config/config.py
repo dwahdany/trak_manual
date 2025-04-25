@@ -138,6 +138,10 @@ class Config:
                 uri="/datasets/stl10/shards/stl10-train-{000000..000004}.tar",
                 custom=True,
             ),
+            "resisc45": DatasetConfig(
+                uri="/datasets/resisc45/shards/resisc45-train-{000000..000025}.tar",
+                custom=True,
+            ),
         }
     )
     experiments: List[ExperimentConfig] = field(
