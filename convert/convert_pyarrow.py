@@ -9,9 +9,10 @@ import pyarrow.dataset as ds
 import zarr
 from rich.progress import Progress
 
-from config.config import Config
+from config.config import Config, create_raw_experiments
 
 cfg = Config()
+cfg.experiments = [create_raw_experiments([3, 4, 5, 6, 7, 8])]
 pprint(cfg)
 
 
@@ -62,6 +63,12 @@ with Progress() as progress:
                 try:
                     parquet_files = list(Path(input_path).glob("*.parquet"))
                     dataset = ds.dataset(parquet_files, format="parquet")
+                    print(
+                        f"Loaded {len(parquet_files)} parquet files from {input_path}"
+                    )
+                    if len(parquet_files) == 0:
+                        print(f"No parquet files found in {input_path}")
+                        continue
                 except Exception as e:
                     print(f"Skipping {encoder_cfg.name} because of error: {e}")
                     continue
@@ -72,7 +79,7 @@ with Progress() as progress:
                 root = zarr.open(str(store_path), mode="a")
 
                 column_task = progress.add_task(
-                    f"Converting columns for {encoder_cfg.name}",
+                    f"Converting columns for {target} and {encoder_cfg.name}",
                     total=len(table.column_names),
                 )
 
@@ -89,9 +96,7 @@ with Progress() as progress:
                     table = table.take(unique_indices)
 
                 print(f"Got {len(uids)} unique UIDs")
-                if (
-                    expected_num_samples := dataset_cfg.num_samples
-                ) is not None:
+                if (expected_num_samples := dataset_cfg.num_samples) is not None:
                     if len(uids) != expected_num_samples:
                         print(
                             f"WARNING: Expected {expected_num_samples} UIDs, got {len(uids)}. Skipping."
