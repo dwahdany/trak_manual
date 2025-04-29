@@ -52,6 +52,9 @@ class ExperimentConfig:
             "food101",
             "pcam",
             "cifar100",
+            "cifar10",
+            "stl10",
+            "resisc45",
             # "fmow",
             # "STL10",
         ],
@@ -137,6 +140,10 @@ class Config:
             ),
             "stl10": DatasetConfig(
                 uri="/datasets/stl10/shards/stl10-train-{000000..000004}.tar",
+                custom=True,
+            ),
+            "resisc45": DatasetConfig(
+                uri="/datasets/resisc45/shards/resisc45-train-{000000..000025}.tar",
                 custom=True,
             ),
         }
