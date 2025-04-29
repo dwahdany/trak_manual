@@ -167,6 +167,10 @@ def process_combination(
     for dataset_name in experiment_cfg.target_datasets:
         output_base_path = f"{cfg.output_dir}/{experiment_cfg.name}/{encoder_cfg.name}/{dataset_name.lower()}"
         os.makedirs(output_base_path, exist_ok=True)
+        done_file = os.path.join(output_base_path, "grads.done")
+
+        if os.path.exists(done_file):
+            continue
 
         schema = pa.schema(
             [
@@ -192,6 +196,7 @@ def process_combination(
             print(
                 f"Skipping {encoder_cfg.name} for {dataset_name} because it is already done"
             )
+            os.touch(done_file)
             continue
         accumulated_tables = []
         write_interval = cfg.write_chunks
@@ -331,6 +336,7 @@ def run_worker(
 def main(cfg: DictConfig) -> None:
     """Main entry point for the application."""
     setup_logging()
+    cfg.experiments = [create_raw_experiments([0, 1, 2, 3, 4, 5, 6, 7, 8])]
 
     # Check if this is a dry run
     dry_run = cfg.get("dry_run", False)
