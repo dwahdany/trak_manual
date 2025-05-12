@@ -281,6 +281,8 @@ def give_custom_dataset(
         task = "food101"
     elif "cifar100" in id_dataset_name.lower():
         task = "cifar100"
+    elif "cifar10" in id_dataset_name.lower():
+        task = "cifar10"
     elif "stl10" in id_dataset_name.lower():
         task = "stl10"
     else:
