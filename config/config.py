@@ -138,6 +138,11 @@ class Config:
                 custom=True,
                 num_samples=50000,
             ),
+            "cifar10": DatasetConfig(
+                uri="/datasets/cifar10/shards/cifar10-train-{000000..000049}.tar",
+                custom=True,
+                num_samples=50000,
+            ),
             "stl10": DatasetConfig(
                 uri="/datasets/stl10/shards/stl10-train-{000000..000004}.tar",
                 custom=True,
