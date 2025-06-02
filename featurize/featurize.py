@@ -314,12 +314,7 @@ def featurize_no_id(
     train_dataset_size = load_dataset_size(
         cfg, experiment_cfg, experiment_cfg.encoders[0]
     )
-    all_targets = [
-        "pcam",
-        "fairvision/amd",
-        "food101",
-        "cifar100",
-    ]
+    all_targets = experiment_cfg.target_datasets
 
     # Filter out completed targets
     targets = []
