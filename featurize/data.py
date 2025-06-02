@@ -1,4 +1,5 @@
 import json
+import logging
 import math
 from typing import Optional
 
@@ -285,6 +286,8 @@ def give_custom_dataset(
         task = "cifar10"
     elif "stl10" in id_dataset_name.lower():
         task = "stl10"
+    elif "resisc45" in id_dataset_name.lower():
+        task = "resisc45"
     else:
         raise ValueError(f"Unknown task: {id_dataset_name}")
     ds_class = {
@@ -312,7 +315,11 @@ def give_custom_dataset(
         return filled_templates[int(label)]
 
     id_zarr = zarr.open("/raid/pdpl/id_downstream_idx.zarr", mode="r")
-    id_uids = set(id_zarr[task]["id_indices"][:].tolist())
+    if task not in id_zarr:
+        id_uids = []
+        logging.warning(f"No id indices for {task}")
+    else:
+        id_uids = set(id_zarr[task]["id_indices"][:].tolist())
     selected_id_str = {f"{uid:08d}" for uid in id_uids}
 
     def id_filter(sample):
