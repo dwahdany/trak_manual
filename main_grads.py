@@ -61,14 +61,16 @@ def check_if_done(
 ):
     for dataset_name in experiment_cfg.target_datasets:
         output_base_path = f"{cfg.output_dir}/{experiment_cfg.name}/{encoder_cfg.name}/{dataset_name.lower()}"
+        done_file = os.path.join(output_base_path, "grads.done")
 
-        # Check for existing UIDs across all partitions
+        if os.path.exists(done_file):
+            continue
+
         if os.path.exists(output_base_path):
             parquet_files = glob.glob(
                 os.path.join(output_base_path, "*.parquet")
             )
             dataset = ds.dataset(parquet_files, format="parquet")
-            # Use native PyArrow operations for better performance
             existing_uids = len(
                 dataset.scanner(columns=["uid"])
                 .to_table()
@@ -77,11 +79,27 @@ def check_if_done(
             )
 
             print(f"Existing uids: {existing_uids}")
-            if existing_uids < give_dataset_size(cfg.datasets[dataset_name]):
+            expected_size = give_dataset_size(cfg.datasets[dataset_name])
+            if existing_uids < expected_size:
                 print(
-                    f"Not done yet for {dataset_name} with encoder {encoder_cfg.name}. Got {existing_uids} samples, expected {give_dataset_size(cfg.datasets[dataset_name])}"
+                    f"Not done yet for {dataset_name} with encoder {encoder_cfg.name}. Got {existing_uids} samples, expected {expected_size}"
                 )
                 return False
+            elif existing_uids == expected_size:
+                try:
+                    os.makedirs(output_base_path, exist_ok=True)
+                    with open(f"{done_file}.tmp", "w") as f:
+                        f.write(f"Complete with {existing_uids} samples")
+                    os.rename(f"{done_file}.tmp", done_file)
+                except OSError:
+                    pass
+            elif existing_uids > expected_size:
+                print(
+                    f"Something went wrong for {dataset_name} with encoder {encoder_cfg.name}. Got {existing_uids} samples, expected {expected_size}"
+                )
+                raise ValueError(
+                    f"Something went wrong for {dataset_name} with encoder {encoder_cfg.name}. Got {existing_uids} samples, expected {expected_size}"
+                )
         else:
             return False
     return True

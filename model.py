@@ -2,8 +2,15 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 from cloudpathlib import S3Client
 from open_clip import create_model_and_transforms, get_tokenizer
+
+if np.lib.NumpyVersion(np.__version__) < "2.0.0":
+    import numpy
+
+    numpy._core = numpy.core
+    np._core = numpy.core
 
 
 class Model:

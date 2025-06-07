@@ -42,9 +42,10 @@ with Progress() as progress:
                 / experiment_cfg.ood_dataset_name
             )
             store_path = Path(input_path) / "data.zarr"
+            done_file = Path(input_path) / "zarr.done"
 
-            # Check if zarr store already exists
-            if store_path.exists():
+            # Check if zarr store and done file already exist
+            if store_path.exists() and done_file.exists():
                 print(f"Zarr store already exists at {store_path}")
                 print("Store info:")
                 store = zarr.DirectoryStore(str(store_path))
@@ -76,7 +77,7 @@ with Progress() as progress:
             unique_uids = set(uids)
             if len(unique_uids) != len(uids):
                 print(
-                    f"WARNING: Found {len(uids) - len(unique_uids)} duplicate UIDs in {encoder_cfg.name}"
+                    f"WARNING: Found {len(uids) - len(unique_uids)} ({len(uids)} - {len(unique_uids)}) duplicate UIDs in {encoder_cfg.name}"
                 )
                 # Keep only first occurrence of each UID
                 _, unique_indices = np.unique(uids, return_index=True)
@@ -95,5 +96,9 @@ with Progress() as progress:
             print(f"Saved zarr store to {store_path}")
             print("Store info:")
             print(root.tree())
+
+            # Create done file to mark completion
+            done_file.touch()
+
         progress.advance(experiment_task)
     progress.remove_task(experiment_task)

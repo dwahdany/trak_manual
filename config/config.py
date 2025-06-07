@@ -28,8 +28,8 @@ class EncoderConfig:
     path: Optional[str] = None
     url: Optional[str] = None
     precision: str = "pure_fp16"  # "amp"
-    embedding_batch_size: int = 2_048
-    grad_batch_size: int = 48
+    embedding_batch_size: int = 4_096
+    grad_batch_size: int = 60
     model_id: int = 0
 
     def __post_init__(self):
@@ -166,19 +166,19 @@ def create_downstream_experiment(name: str):
             EncoderConfig(
                 name=f"{name}_v0",
                 architecture="ViT-B-32",
-                path=f"s3://pdpl/small_clip_checkpoints/curation/random/{name}/ratio_1.0/datacomp_v0/small_scale/checkpoints/epoch_5.pt",
+                path=f"s3://pdpl/small_clip_checkpoints/curation/random/{name.replace('amd', 'AMD').replace('glaucoma', 'Glaucoma').replace('dr', 'DR')}/ratio_1.0/datacomp_v0/small_scale/checkpoints/epoch_5.pt",
                 model_id=0,
             ),
             EncoderConfig(
                 name=f"{name}_v1",
                 architecture="ViT-B-32",
-                path=f"s3://pdpl/small_clip_checkpoints/curation/random/{name}/ratio_1.0/datacomp_v1/small_scale/checkpoints/epoch_5.pt",
+                path=f"s3://pdpl/small_clip_checkpoints/curation/random/{name.replace('amd', 'AMD').replace('glaucoma', 'Glaucoma').replace('dr', 'DR')}/ratio_1.0/datacomp_v1/small_scale/checkpoints/epoch_5.pt",
                 model_id=1,
             ),
             EncoderConfig(
                 name=f"{name}_v2",
                 architecture="ViT-B-32",
-                path=f"s3://pdpl/small_clip_checkpoints/curation/random/{name}/ratio_1.0/datacomp_v2/small_scale/checkpoints/epoch_5.pt",
+                path=f"s3://pdpl/small_clip_checkpoints/curation/random/{name.replace('amd', 'AMD').replace('glaucoma', 'Glaucoma').replace('dr', 'DR')}/ratio_1.0/datacomp_v2/small_scale/checkpoints/epoch_5.pt",
                 model_id=2,
             ),
         ],
