@@ -5,7 +5,6 @@ from typing import Optional
 
 import numpy as np
 import webdataset as wds
-import zarr
 from torch.utils.data import IterableDataset
 from torchvision.datasets import CIFAR10, CIFAR100, STL10, Food101
 from training.data import (
@@ -164,6 +163,9 @@ def give_dataset(
     preprocess_val,
     batch_size,
     existing_uids=None,
+    map_labels=True,
+    include_json=True,
+    dataset_kwargs: Optional[dict] = None,
 ):
     dataset_cfg = cfg.datasets[dataset_name]
     if not dataset_cfg.splittable:
@@ -177,8 +179,8 @@ def give_dataset(
             dataset_cfg_to_shards(dataset_cfg), worker_id, worker_total
         )
     if dataset_cfg.custom:
-        dataset, id_num_samples, id_filter, label_map = give_custom_dataset(
-            cfg, dataset_name, uri=shards, resampled=False
+        dataset, label_map = give_custom_dataset(
+            cfg, dataset_name, uri=shards, resampled=False, dataset_kwargs=dataset_kwargs
         )
     else:
         dataset = wds.SimpleShardList(shards)
@@ -218,26 +220,55 @@ def give_dataset(
 
         pipeline.extend([wds.select(ood_filter)])
 
-    pipeline.extend(
-        [
+    if map_labels:
+        pipeline.extend(
+            [   
+                wds.map(
+                    lambda sample: {
+                        **sample,
+                        "txt": label_map(sample["label"])
+                        if "txt" not in sample
+                        else sample["txt"],
+                    }
+                ),
+            ])
+    else:
+        pipeline.extend([
             wds.map(
                 lambda sample: {
                     **sample,
-                    "txt": label_map(sample["label"])
+                    "txt": int(sample["label"])
                     if "txt" not in sample
                     else sample["txt"],
                 }
             ),
-            wds.rename(image="jpg;png;jpeg;webp", text="txt"),
+        ])
+    pipeline.extend([wds.rename(image="jpg;png;jpeg;webp", text="txt")])
+    pipeline.extend([
+        wds.map_dict(
+            image=preprocess_val,
+        ),
+    ])
+    if tokenizer is not None:
+        pipeline.extend([
             wds.map_dict(
-                image=preprocess_val,
                 text=lambda text: tokenizer(text)[0],
                 # json=lambda data: json.loads(data.decode("utf-8")),
             ),
-            wds.to_tuple("image", "text", "json"),
+        ])
+    else:
+        logging.warning("No tokenizer provided, using raw text")
+    if include_json:
+        pipeline.extend([
+                wds.to_tuple("image", "text", "json"),
+                wds.batched(batch_size, partial=True),
+            ]
+        )
+    else:
+        pipeline.extend([
+            wds.to_tuple("image", "text"),
             wds.batched(batch_size, partial=True),
-        ]
-    )
+        ])
     dataset = wds.DataPipeline(*pipeline)
     dataloader = wds.WebLoader(
         dataset,
@@ -252,11 +283,62 @@ def give_dataset(
     return dataloader
 
 
+def give_zeroshot_sets(
+    cfg,
+    id_dataset_name: str,
+    dataset_kwargs: Optional[dict] = None,
+):
+    if "fairvision/glaucoma" in id_dataset_name.lower():
+        task = "fairvision/glaucoma"
+    elif "fairvision/amd" in id_dataset_name.lower():
+        task = "fairvision/amd"
+    elif "fairvision/dr" in id_dataset_name.lower():
+        task = "fairvision/dr"
+    elif "fitzpatrick17k" in id_dataset_name.lower():
+        task = "fitzpatrick17k"
+    elif "pcam" in id_dataset_name.lower():
+        task = "pcam"
+    elif "food101" in id_dataset_name.lower():
+        task = "food101"
+    elif "cifar100" in id_dataset_name.lower():
+        task = "cifar100"
+    elif "cifar10" in id_dataset_name.lower():
+        task = "cifar10"
+    elif "stl10" in id_dataset_name.lower():
+        task = "stl10"
+    elif "resisc45" in id_dataset_name.lower():
+        task = "resisc45"
+    else:
+        raise ValueError(f"Unknown task: {id_dataset_name}")
+    ds_class = {
+        "cifar10": CIFAR10,
+        "cifar100": CIFAR100,
+        "food101": Food101,
+        "stl10": STL10,
+    }
+    if task.lower() in ds_class.keys():
+        if dataset_kwargs is None:
+            dataset_kwargs = {}
+        classnames = ds_class[task.lower()](root=cfg.datasets[id_dataset_name].root, download=True, **dataset_kwargs).classes
+    else:
+        with open(
+            "/home/c02dawa/CISPA-az6/pdpl-2025/code/CLIP_benchmark/clip_benchmark/datasets/en_classnames.json"
+        ) as f:
+            classnames = json.load(f)[task.lower()]
+
+    with open(
+        "/home/c02dawa/CISPA-az6/pdpl-2025/code/CLIP_benchmark/clip_benchmark/datasets/en_zeroshot_classification_templates.json"
+    ) as f:
+        templates = json.load(f)[task.lower()]
+
+    return classnames, templates
+
 def give_custom_dataset(
     cfg,
     id_dataset_name: str,
     uri: Optional[str] = None,
     resampled=True,
+    dataset_kwargs: Optional[dict] = None,
 ):
     shards = cfg.datasets[id_dataset_name].uri
     if uri is not None:
@@ -297,36 +379,31 @@ def give_custom_dataset(
         "stl10": STL10,
     }
     if task.lower() in ds_class.keys():
-        classnames = ds_class[task.lower()](root="/datasets").classes
+        if dataset_kwargs is None:
+            dataset_kwargs = {}
+        classnames = ds_class[task.lower()](root=cfg.datasets[id_dataset_name].root, download=True, **dataset_kwargs).classes
     else:
         with open(
-            "/git/CLIP_benchmark/clip_benchmark/datasets/en_classnames.json"
+            "/home/c02dawa/CISPA-az6/pdpl-2025/code/CLIP_benchmark/clip_benchmark/datasets/en_classnames.json"
         ) as f:
             classnames = json.load(f)[task.lower()]
 
     with open(
-        "/git/CLIP_benchmark/clip_benchmark/datasets/en_zeroshot_classification_templates.json"
+        "/home/c02dawa/CISPA-az6/pdpl-2025/code/CLIP_benchmark/clip_benchmark/datasets/en_zeroshot_classification_templates.json"
     ) as f:
-        template = json.load(f)[task.lower()][0]
+        templates = json.load(f)[task.lower()]
 
-    filled_templates = [template.replace("{c}", c) for c in classnames]
+    filled_templates = [
+        [template.replace("{c}", c) for c in classnames] for template in templates
+    ]
 
-    def label_map(label):
-        return filled_templates[int(label)]
+    def label_map(label, one=True):
+        if one:
+            return filled_templates[0][int(label)]
+        else:
+            return filled_templates[int(label)]
 
-    id_zarr = zarr.open("/raid/pdpl/id_downstream_idx.zarr", mode="r")
-    if task not in id_zarr:
-        id_uids = []
-        logging.warning(f"No id indices for {task}")
-    else:
-        id_uids = set(id_zarr[task]["id_indices"][:].tolist())
-    selected_id_str = {f"{uid:08d}" for uid in id_uids}
-
-    def id_filter(sample):
-        return sample["__key__"] in selected_id_str
-
-    indistribution_data_num_samples = len(id_uids)
-    return id_dataset, indistribution_data_num_samples, id_filter, label_map
+    return id_dataset, label_map
 
 
 def give_number_of_samples(dataset_cfg):
@@ -347,7 +424,6 @@ def give_number_of_samples(dataset_cfg):
 def give_embedding_dataset(
     cfg,
     dataset_name,
-    id_dataset_name,
     tokenizer,
     preprocess_val,
     batch_size,
@@ -357,67 +433,30 @@ def give_embedding_dataset(
         ood_dataset_cfg.uri,
         deterministic=True,  # worker_seed=cfg.seed
     )  # same constrastive samples on all workers
-    if id_dataset_name is not None:
-        id_dataset, indistribution_data_num_samples, id_filter, label_map = (
-            give_custom_dataset(cfg, id_dataset_name=id_dataset_name, resampled=True)
-        )
 
-        p_id = indistribution_data_num_samples / (
-            indistribution_data_num_samples + give_number_of_samples(ood_dataset_cfg)
-        )
+    pipeline = [ood_dataset]
 
-        probs = [1 - p_id, p_id]
-
-        pipelines = [
-            [ood_dataset],
-            [id_dataset],
+    pipeline.extend(
+        [
+            wds.split_by_worker,
+            wds.tarfile_to_samples(
+                handler=log_and_continue
+            ),  # tarfile_to_samples_nothrow,
         ]
-    else:
-        id_dataset = None
-        pipelines = [[ood_dataset]]
-
-    for i, pipeline in enumerate(pipelines):
-        pipeline.extend(
-            [
-                wds.split_by_worker,
-                wds.tarfile_to_samples(
-                    handler=log_and_continue
-                ),  # tarfile_to_samples_nothrow,
-            ]
-        )
-        if i == 1:
-            pipeline.extend([wds.select(id_filter)])
-        pipeline.extend([wds.select(filter_no_caption_or_no_image)])
-        pipeline.extend(
-            [
-                wds.shuffle(
-                    bufsize=5000,
-                    initial=1000,
-                ),
-            ]
-        )
-
-    if len(pipelines) > 1:
-        pipeline = [
-            wds.RandomMix(
-                [wds.DataPipeline(*pipeline) for pipeline in pipelines],
-                probs=probs,
-                longest=False,
-            )
+    )
+    pipeline.extend([wds.select(filter_no_caption_or_no_image)])
+    pipeline.extend(
+        [
+            wds.shuffle(
+                bufsize=5000,
+                initial=1000,
+            ),
         ]
-    else:
-        pipeline = pipelines[0]
+    )
+
     pipeline.extend(
         [
             wds.decode("pilrgb", handler=log_and_continue),
-            wds.map(
-                lambda sample: {
-                    **sample,
-                    "txt": label_map(sample["label"])
-                    if "txt" not in sample
-                    else sample["txt"],
-                }
-            ),
             wds.rename(image="jpg;png;jpeg;webp", text="txt"),
             wds.map_dict(image=preprocess_val, text=lambda text: tokenizer(text)[0]),
             wds.to_tuple("image", "text"),

@@ -1,8 +1,8 @@
-import gc
 import glob
 import json
 import logging
 import os
+import time
 import traceback
 import uuid
 from typing import Dict, List, Optional
@@ -11,17 +11,18 @@ import hydra
 import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
+import submitit
 import torch
 from compute_grads import Featurizer
-from data import give_dataset, give_dataset_size, give_embedding_dataset
-from model import Model
+from data import give_dataset, give_dataset_size, give_zeroshot_sets
+from model import Model, ZeroshotClassifier
 from omegaconf import DictConfig
 from tqdm.auto import tqdm
 
 from config.config import (
     EncoderConfig,
     ExperimentConfig,
-    create_raw_experiments,
+    create_arch_experiments,
     register_configs,
 )
 
@@ -119,7 +120,7 @@ def process_combination(
     subworker_id: int,
     subworker_total: int,
 ):
-    model = Model(encoder_cfg, cfg.device, cfg.s3_endpoint_url)
+    model = Model(encoder_cfg, "cpu", cfg.s3_endpoint_url)
     try:
         model, tokenizer, _, preprocess_val = model.create_model_and_transforms()
     except Exception as e:
@@ -127,44 +128,14 @@ def process_combination(
         print("Traceback:")
         print(traceback.format_exc())
         return
-    embeddings_dataset = give_embedding_dataset(
-        cfg,
-        experiment_cfg.ood_dataset_name,
-        experiment_cfg.id_dataset_name,
-        tokenizer,
-        preprocess_val,
-        encoder_cfg.embedding_batch_size,
-    )
-    featurizer = Featurizer(
-        model=model,
-        task="clip",
-        proj_dim=cfg.proj_dim,
-        device="cuda",
-        model_id=encoder_cfg.model_id,
-        use_half_precision=True,
-        projector_seed=cfg.seed,
-        proj_max_batch_size=encoder_cfg.grad_batch_size,
-    )
-    featurizer.task.get_embeddings(
-        model,
-        tqdm(
-            embeddings_dataset,
-            desc="Computing embeddings",
-            total=cfg.num_contrastive_samples // encoder_cfg.embedding_batch_size + 1,
-        ),
-        batch_size=encoder_cfg.embedding_batch_size,
-        size=cfg.num_contrastive_samples,
-        embedding_dim=512,
-        preprocess_fn_img=lambda x: x.to("cuda").to(torch.float16),
-        preprocess_fn_txt=lambda x: x.to("cuda"),
-    )
 
-    del model
-    gc.collect()
-    torch.cuda.empty_cache()
+    # del model
+    # gc.collect()
+    # torch.cuda.empty_cache()
 
     print(f"Processing {encoder_cfg.name} for {experiment_cfg.target_datasets}")
     for dataset_name in experiment_cfg.target_datasets:
+        dataset_cfg = cfg.datasets[dataset_name]
         output_base_path = f"{cfg.output_dir}/{experiment_cfg.name}/{encoder_cfg.name}/{dataset_name.lower()}"
         os.makedirs(output_base_path, exist_ok=True)
         done_file = os.path.join(output_base_path, "grads.done")
@@ -192,7 +163,7 @@ def process_combination(
                 existing_uids.update(batch["uid"].to_pylist())
 
         print(f"Existing uids: {len(existing_uids)}")
-        if len(existing_uids) == give_dataset_size(cfg.datasets[dataset_name]):
+        if len(existing_uids) == give_dataset_size(dataset_cfg):
             print(
                 f"Skipping {encoder_cfg.name} for {dataset_name} because it is already done"
             )
@@ -210,10 +181,12 @@ def process_combination(
             dataset_name,
             subworker_id,
             subworker_total,
-            tokenizer,
-            preprocess_val,
-            encoder_cfg.grad_batch_size,
+            tokenizer=None if dataset_cfg.custom else tokenizer,
+            preprocess_val=preprocess_val,
+            batch_size=encoder_cfg.grad_batch_size,
             existing_uids=existing_uids,
+            map_labels=False,
+            include_json=True,
         )
         if data.num_samples == 0:
             print(f"No data for {dataset_name} and {subworker_id}")
@@ -221,18 +194,40 @@ def process_combination(
         print(
             f"Data for {dataset_name} and {subworker_id} has {data.num_samples} samples (before filtering)"
         )
+        classnames, templates = give_zeroshot_sets(cfg, dataset_name)
+        zeroshot_templates = [
+            (tokenizer([template.replace("{c}", c) for template in templates]))
+            for c in classnames
+        ]
 
+        featurizer = Featurizer(
+            model=torch.func.replace_all_batch_norm_modules_(
+                ZeroshotClassifier(model, zeroshot_templates)
+            ).to(cfg.device),
+            task="image_classification",
+            proj_dim=cfg.proj_dim,
+            device="cuda",
+            model_id=encoder_cfg.model_id,
+            use_half_precision=True,
+            projector_seed=cfg.seed,
+            proj_max_batch_size=encoder_cfg.grad_batch_size,
+        )
         partition_base_name = f"part_{subworker_id}"
         current_partition = 0
+
+        print(featurizer.model)
+        p = dict(model.named_parameters())
+        for k, v in p.items():
+            print(k, v.device, v.dtype)
 
         for batch_idx, (img, txt, metadata_batch) in enumerate(
             tqdm(data, total=data.num_batches)
         ):
             uids = [m["uid"] for m in metadata_batch]
 
-            img = img.to("cuda").to(torch.float16)
+            img = img.to("cuda")  # .to(torch.float16)
             txt = txt.to("cuda")
-
+            # with torch.autocast(device_type="cuda", dtype=torch.float16):
             grads, loss_grads, loss_img, loss_txt = featurizer.featurize((img, txt))
             batch_data = {
                 "uid": uids,
@@ -336,13 +331,27 @@ def run_worker(
 def main(cfg: DictConfig) -> None:
     """Main entry point for the application."""
     setup_logging()
-    cfg.experiments = [create_raw_experiments([0, 1, 2, 3, 4, 5, 6, 7, 8])]
+    from rich.progress import BarColumn, Progress, TextColumn
+
+    log_folder = "log/%A/%j"
+    executor = submitit.AutoExecutor(folder=log_folder)
+    executor.update_parameters(
+        timeout_min=180,
+        slurm_partition="gpu,a100,r7525,xe8545,tmp",
+        slurm_gpus_per_task=1,
+        slurm_additional_parameters={
+            "gpu-bind": "single:1",
+            "exclude": "xe8545-a100-06",
+        },
+        name="grads",
+    )
+    # cfg.experiments = [create_raw_experiments([0, 1, 2, 3, 4, 5, 6, 7, 8])]
+    cfg.experiments = [create_arch_experiments()]
 
     # Check if this is a dry run
     dry_run = cfg.get("dry_run", False)
-
-    for experiment in cfg.experiments:
-        if dry_run:
+    if dry_run:
+        for experiment in cfg.experiments:
             assignments = run_worker(cfg, experiment, dry_run=True)
             logger = logging.getLogger("results")
             logger.info(
@@ -353,8 +362,18 @@ def main(cfg: DictConfig) -> None:
                     "assignments": assignments,
                 }
             )
-        else:
-            run_worker(cfg, experiment)
+    else:
+        jobs = executor.map_array(lambda exp: run_worker(cfg, exp), cfg.experiments)
+        with Progress(
+            TextColumn("{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        ) as progress:
+            task = progress.add_task("Processing", total=len(jobs))
+            while not all(job.done() for job in jobs):
+                sum_done = sum(job.done() for job in jobs)
+                progress.update(task, completed=sum_done)
+                time.sleep(1)
 
 
 if __name__ == "__main__":

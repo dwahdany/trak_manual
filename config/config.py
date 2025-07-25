@@ -13,6 +13,7 @@ class DatasetConfig:
     splittable: bool = True
     custom: bool = False
     num_samples: Optional[int] = None
+    root: str = "/home/c02dawa/CISPA-az6/pdpl-2025/data/datasets"
 
     def __post_init__(self):
         if self.uri is not None and self.uris is not None:
@@ -27,14 +28,16 @@ class EncoderConfig:
     name: str
     path: Optional[str] = None
     url: Optional[str] = None
-    precision: str = "pure_fp16"  # "amp"
+    pretrained: Optional[str] = None
+    precision: str = "amp"  # "pure_fp16"
     embedding_batch_size: int = 4_096
+    embedding_dim: int = 512
     grad_batch_size: int = 120
     model_id: int = 0
 
     def __post_init__(self):
-        if not (self.path or self.url):
-            raise ValueError("Either path or url must be supplied")
+        if not (self.path or self.url or self.pretrained):
+            raise ValueError("Either path or url or pretrained must be supplied")
 
 
 @dataclass
@@ -64,21 +67,21 @@ class ExperimentConfig:
             EncoderConfig(
                 name="local_commonpool_s_s13m_b4k_0",
                 architecture="ViT-B-32",
-                path="/raid/pdpl/small_clip_checkpoints/raw/datacomp_v0/small_scale/checkpoints/epoch_5.pt",
+                path="/home/c02dawa/CISPA-az6/pdpl-2025/data/pdpl/small_clip_checkpoints/raw/datacomp_v0/small_scale/checkpoints/epoch_5.pt",
                 model_id=0,
             ),
-            EncoderConfig(
-                name="local_commonpool_s_s13m_b4k_1",
-                architecture="ViT-B-32",
-                path="/raid/pdpl/small_clip_checkpoints/raw/datacomp_v1/small_scale/checkpoints/epoch_5.pt",
-                model_id=1,
-            ),
-            EncoderConfig(
-                name="local_commonpool_s_s13m_b4k_2",
-                architecture="ViT-B-32",
-                path="/raid/pdpl/small_clip_checkpoints/raw/datacomp_v2/small_scale/checkpoints/epoch_5.pt",
-                model_id=2,
-            ),
+            # EncoderConfig(
+            #     name="local_commonpool_s_s13m_b4k_1",
+            #     architecture="ViT-B-32",
+            #     path="/home/c02dawa/CISPA-az6/pdpl-2025/data/pdpl/small_clip_checkpoints/raw/datacomp_v1/small_scale/checkpoints/epoch_5.pt",
+            #     model_id=1,
+            # ),
+            # EncoderConfig(
+            #     name="local_commonpool_s_s13m_b4k_2",
+            #     architecture="ViT-B-32",
+            #     path="/home/c02dawa/CISPA-az6/pdpl-2025/data/pdpl/small_clip_checkpoints/raw/datacomp_v2/small_scale/checkpoints/epoch_5.pt",
+            #     model_id=2,
+            # ),
         ]
     )
 
@@ -90,65 +93,68 @@ class Config:
     worker_total: int = 1
     dry_run: bool = False
     debug: bool = False
-    output_dir: str = "/raid/pdpl/trak/grads/"
-    save_dir: str = "/raid/pdpl/trak/trak_results/"
+    output_dir: str = "/home/c02dawa/CISPA-az6/pdpl-2025/data/pdpl/trak/grads/"
+    save_dir: str = "/home/c02dawa/CISPA-az6/pdpl-2025/data/pdpl/trak/trak_results/"
+    score_storage: str = (
+        "/home/c02dawa/CISPA-az6/pdpl-2025/data/pdpl/trak/trak_scores.zarr"
+    )
     s3_endpoint_url: Optional[str] = "https://s3.fraunhofer.de"
     write_chunks: int = 1000  # number of samples per output chunk
     seed: int = 42  # for sampling the constrastive samples, and projector
-    proj_dim: int = 2048
+    proj_dim: int = 32_768
     num_contrastive_samples: int = 50_000
     datasets: Dict[str, DatasetConfig] = field(
         default_factory=lambda: {
             "commonpool": DatasetConfig(
-                uri="/datasets/datacomp/shards/{00000000..00001287}.tar",
+                uri="/home/c02dawa/CISPA-az6/pdpl-2025/data/datasets/datacomp/shards/{00000000..00001287}.tar",
                 num_samples=10367394,
             ),
             "pcam": DatasetConfig(
-                uri="/datasets/pcam/shards/pcam-train-{000000..000262}.tar",
+                uri="/home/c02dawa/CISPA-az6/pdpl-2025/data/datasets/pcam/shards/pcam-train-{000000..000262}.tar",
                 custom=True,
                 num_samples=262144,
             ),
             "fairvision/amd": DatasetConfig(
-                uri="/datasets/fairvision/AMD/shards/amd-train-{000000..000005}.tar",
+                uri="/home/c02dawa/CISPA-az6/pdpl-2025/data/datasets/fairvision/AMD/shards/amd-train-{000000..000005}.tar",
                 custom=True,
                 num_samples=6000,
             ),
             "fairvision/glaucoma": DatasetConfig(
-                uri="/datasets/fairvision/Glaucoma/shards/glaucoma-train-{000000..000005}.tar",
+                uri="/home/c02dawa/CISPA-az6/pdpl-2025/data/datasets/fairvision/Glaucoma/shards/glaucoma-train-{000000..000005}.tar",
                 custom=True,
                 num_samples=6000,
             ),
             "fairvision/dr": DatasetConfig(
-                uri="/datasets/fairvision/DR/shards/dr-train-{000000..000005}.tar",
+                uri="/home/c02dawa/CISPA-az6/pdpl-2025/data/datasets/fairvision/DR/shards/dr-train-{000000..000005}.tar",
                 custom=True,
                 num_samples=6000,
             ),
             "fitzpatrick17k": DatasetConfig(
-                uri="/datasets/fitzpatrick17k/shards/fitzpatrick17k-train-{000000..000012}.tar",
+                uri="/home/c02dawa/CISPA-az6/pdpl-2025/data/datasets/fitzpatrick17k/shards/fitzpatrick17k-train-{000000..000012}.tar",
                 custom=True,
                 num_samples=12858,
             ),
             "food101": DatasetConfig(
-                uri="/datasets/food101/shards/food101-train-{000000..000075}.tar",
+                uri="/home/c02dawa/CISPA-az6/pdpl-2025/data/datasets/food101/shards/food101-train-{000000..000075}.tar",
                 custom=True,
                 num_samples=75750,
             ),
             "cifar100": DatasetConfig(
-                uri="/datasets/cifar100/shards/cifar100-train-{000000..000049}.tar",
+                uri="/home/c02dawa/CISPA-az6/pdpl-2025/data/datasets/cifar100/shards/cifar100-train-{000000..000049}.tar",
                 custom=True,
                 num_samples=50000,
             ),
             "cifar10": DatasetConfig(
-                uri="/datasets/cifar10/shards/cifar10-train-{000000..000049}.tar",
+                uri="/home/c02dawa/CISPA-az6/pdpl-2025/data/datasets/cifar10/shards/cifar10-train-{000000..000049}.tar",
                 custom=True,
                 num_samples=50000,
             ),
             "stl10": DatasetConfig(
-                uri="/datasets/stl10/shards/stl10-train-{000000..000004}.tar",
+                uri="/home/c02dawa/CISPA-az6/pdpl-2025/data/datasets/stl10/shards/stl10-train-{000000..000004}.tar",
                 custom=True,
             ),
             "resisc45": DatasetConfig(
-                uri="/datasets/resisc45/shards/resisc45-train-{000000..000025}.tar",
+                uri="/home/c02dawa/CISPA-az6/pdpl-2025/data/datasets/resisc45/shards/resisc45-train-{000000..000025}.tar",
                 custom=True,
             ),
         }
@@ -210,6 +216,40 @@ def create_raw_experiments(seeds: List[int]):
                 model_id=seed,
             )
             for seed in seeds
+        ],
+    )
+
+
+def create_arch_experiments():
+    return ExperimentConfig(
+        name="arch",
+        encoders=[
+            EncoderConfig(
+                name="rn50_openai",
+                architecture="RN50-quickgelu",
+                pretrained="openai",
+                model_id=0,
+                grad_batch_size=64,
+                embedding_batch_size=1_024,
+                embedding_dim=1024,
+            ),
+            EncoderConfig(
+                name="rn101_openai",
+                architecture="RN101-quickgelu",
+                pretrained="openai",
+                model_id=1,
+                grad_batch_size=32,
+                embedding_batch_size=1_024,
+                embedding_dim=1024,
+            ),
+            EncoderConfig(
+                name="vitb32_openai",
+                architecture="ViT-B-32-quickgelu",
+                pretrained="openai",
+                model_id=2,
+                grad_batch_size=64,
+                embedding_dim=512,
+            ),
         ],
     )
 

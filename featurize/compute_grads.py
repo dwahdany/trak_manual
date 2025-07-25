@@ -123,9 +123,7 @@ class Featurizer(TRAKer):
     def featurize(self, batch):
         with ch.amp.autocast(device_type="cuda", dtype=torch.float16):
             with ch.no_grad():
-                grads = self.gradient_computer.compute_per_sample_grad(
-                    batch=batch
-                )
+                grads = self.gradient_computer.compute_per_sample_grad(batch=batch)
                 grads = self.projector.project(grads, model_id=self.model_id)
                 grads /= self.normalize_factor
                 loss_grads = self.gradient_computer.compute_loss_grad(batch)
