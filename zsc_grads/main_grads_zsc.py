@@ -1,0 +1,411 @@
+import gc
+import glob
+import json
+import logging
+import os
+import time
+import uuid
+from typing import Dict, Iterable, List, Optional, Tuple
+
+import hydra
+import pyarrow as pa
+import pyarrow.dataset as ds
+import pyarrow.parquet as pq
+import submitit
+import torch
+from data import give_dataset, give_dataset_size, give_zeroshot_sets
+from model import Model, ZeroshotClassifier
+from omegaconf import DictConfig
+from torch import Tensor
+from tqdm.auto import tqdm
+from trak import TRAKer
+
+from config.config import (
+    EncoderConfig,
+    ExperimentConfig,
+    create_arch_experiments,
+    register_configs,
+)
+
+
+class StatelessTraker(TRAKer):
+    def featurize(
+        self,
+        batch: Iterable[Tensor],
+        **kwargs,
+    ) -> Tuple[Tensor, Tensor]:
+        """Creates TRAK features for the given batch by computing the gradient
+        of the model output function and projecting it. In the notation of the
+        paper, for an input pair :math:`z=(x,y)`, model parameters
+        :math:`\\theta`, and JL projection matrix :math:`P`, this method
+        computes :math:`P^\\top \\nabla_\\theta f(z_i, \\theta)`.
+        Additionally, this method computes the gradient of the out-to-loss
+        function (in the notation of the paper, the :math:`Q` term in Section
+        3.4).
+
+        Either :code:`inds` or :code:`num_samples` must be specified. Using
+        :code:`num_samples` will write sequentially into the internal store of
+        the :func:`TRAKer`.
+
+        Args:
+            batch (Iterable[Tensor]):
+                input batch
+
+        Returns:
+            Tuple[Tensor, Tensor]: TRAK features and out-to-loss gradients
+        """
+        grads = self.gradient_computer.compute_per_sample_grad(batch=batch)
+        grads = self.projector.project(grads, model_id=self.saver.current_model_id)
+        grads /= self.normalize_factor
+
+        loss_grads = self.gradient_computer.compute_loss_grad(batch)
+
+        return grads, loss_grads
+
+
+class JsonFormatter(logging.Formatter):
+    """Format log records as JSON."""
+
+    def format(self, record):
+        if isinstance(record.msg, dict):
+            return json.dumps(record.msg)
+        return json.dumps({"message": record.getMessage()})
+
+
+def setup_logging():
+    """Configure JSON logging to stdout."""
+    logger = logging.getLogger("results")
+    logger.setLevel(logging.INFO)
+
+    handler = logging.StreamHandler()
+    handler.setFormatter(JsonFormatter())
+    logger.addHandler(handler)
+
+    return logger
+
+
+def log_results(params: Dict, metrics: Dict):
+    """Log parameters and metrics as structured data."""
+    logger = logging.getLogger("results")
+    logger.info(
+        {
+            "type": "results",
+            "params": params,
+            "metrics": metrics,
+        }
+    )
+
+
+def check_if_done(
+    cfg: DictConfig,
+    experiment_cfg: ExperimentConfig,
+    encoder_cfg: EncoderConfig,
+):
+    for dataset_name in experiment_cfg.target_datasets:
+        output_base_path = f"{cfg.output_dir}/{experiment_cfg.name}/{encoder_cfg.name}/{dataset_name.lower()}"
+        done_file = os.path.join(output_base_path, "grads.done")
+
+        if os.path.exists(done_file):
+            continue
+
+        if os.path.exists(output_base_path):
+            parquet_files = glob.glob(os.path.join(output_base_path, "*.parquet"))
+            if len(parquet_files) == 0:
+                print(
+                    f"No parquet files found for {dataset_name} with encoder {encoder_cfg.name}"
+                )
+                return False
+            print("Scanning these files ... ")
+            print(parquet_files)
+            dataset = ds.dataset(parquet_files, format="parquet")
+            existing_uids = len(
+                dataset.scanner(columns=["uid"]).to_table().column("uid").unique()
+            )
+
+            print(f"Existing uids: {existing_uids}")
+            expected_size = give_dataset_size(cfg.datasets[dataset_name])
+            if existing_uids < expected_size:
+                print(
+                    f"Not done yet for {dataset_name} with encoder {encoder_cfg.name}. Got {existing_uids} samples, expected {expected_size}"
+                )
+                return False
+            elif existing_uids == expected_size:
+                try:
+                    os.makedirs(output_base_path, exist_ok=True)
+                    with open(f"{done_file}.tmp", "w") as f:
+                        f.write(f"Complete with {existing_uids} samples")
+                    os.rename(f"{done_file}.tmp", done_file)
+                except OSError:
+                    pass
+            elif existing_uids > expected_size:
+                print(
+                    f"Something went wrong for {dataset_name} with encoder {encoder_cfg.name}. Got {existing_uids} samples, expected {expected_size}"
+                )
+                raise ValueError(
+                    f"Something went wrong for {dataset_name} with encoder {encoder_cfg.name}. Got {existing_uids} samples, expected {expected_size}"
+                )
+        else:
+            return False
+    return True
+
+
+def process_combination(
+    cfg: DictConfig,
+    experiment_cfg: ExperimentConfig,
+    encoder_cfg: EncoderConfig,
+    subworker_id: int,
+    subworker_total: int,
+):
+    print(f"Processing {encoder_cfg.name} for {experiment_cfg.target_datasets}")
+    for dataset_name in experiment_cfg.target_datasets:
+        dataset_cfg = cfg.datasets[dataset_name]
+        output_base_path = f"{cfg.output_dir}/{experiment_cfg.name}/{encoder_cfg.name}/{dataset_name.lower()}"
+        os.makedirs(output_base_path, exist_ok=True)
+        done_file = os.path.join(output_base_path, "grads.done")
+
+        if os.path.exists(done_file):
+            continue
+
+        schema = pa.schema(
+            [
+                ("uid", pa.string()),
+                ("grads", pa.list_(pa.float16(), cfg.proj_dim)),
+                ("loss_grads", pa.float32()),
+            ]
+        )
+
+        # Check for existing UIDs across all partitions
+        existing_uids = set()
+        if os.path.exists(output_base_path):
+            parquet_files = glob.glob(os.path.join(output_base_path, "*.parquet"))
+            dataset = ds.dataset(parquet_files, format="parquet")
+            for batch in dataset.scanner().to_batches():
+                existing_uids.update(batch["uid"].to_pylist())
+
+        print(f"Existing uids: {len(existing_uids)}")
+        if len(existing_uids) == give_dataset_size(dataset_cfg):
+            print(
+                f"Skipping {encoder_cfg.name} for {dataset_name} because it is already done"
+            )
+            os.touch(done_file)
+            continue
+        accumulated_tables = []
+        write_interval = cfg.write_chunks
+
+        metadata = {
+            "grads_shape": str(cfg.proj_dim),
+        }
+
+        model = Model(encoder_cfg, "cpu", cfg.s3_endpoint_url)
+        model, tokenizer, _, preprocess_val = model.create_model_and_transforms()
+        data = give_dataset(
+            cfg,
+            dataset_name,
+            subworker_id,
+            subworker_total,
+            tokenizer=None if dataset_cfg.custom else tokenizer,
+            preprocess_val=preprocess_val,
+            batch_size=encoder_cfg.grad_batch_size,
+            existing_uids=existing_uids,
+            map_labels=False,
+            include_json=True,
+        )
+        if data.num_samples == 0:
+            print(f"No data for {dataset_name} and {subworker_id}")
+            continue
+        print(
+            f"Data for {dataset_name} and {subworker_id} has {data.num_samples} samples (before filtering)"
+        )
+        classnames, templates = give_zeroshot_sets(cfg, dataset_name)
+        zeroshot_templates = [
+            (tokenizer([template.replace("{c}", c) for template in templates]))
+            for c in classnames
+        ]
+
+        # Create classifier and ensure consistent precision after batch norm replacement
+        classifier_model = ZeroshotClassifier(model, zeroshot_templates)
+        classifier_model = torch.func.replace_all_batch_norm_modules_(
+            classifier_model
+        ).to(cfg.device)
+
+        featurizer = StatelessTraker(
+            model=classifier_model,
+            task="image_classification",
+            proj_dim=cfg.proj_dim,
+            device="cuda",
+            use_half_precision=True,
+            projector_seed=cfg.seed,
+            proj_max_batch_size=encoder_cfg.grad_batch_size,
+            train_set_size=give_dataset_size(dataset_cfg),
+        )
+        featurizer.saver.current_model_id = encoder_cfg.model_id
+        del classifier_model
+        del model
+        gc.collect()
+        torch.cuda.empty_cache()
+        partition_base_name = f"part_{subworker_id}"
+        current_partition = 0
+
+        # print(featurizer.model)
+        # p = dict(featurizer.model.named_parameters())
+        # for k, v in p.items():
+        #     print(k, v.device, v.dtype)
+
+        for batch_idx, (img, txt, metadata_batch) in enumerate(
+            tqdm(data, total=data.num_batches)
+        ):
+            uids = [m["uid"] for m in metadata_batch]
+
+            img = img.to("cuda")
+            txt = txt.to("cuda")
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                grads, loss_grads = featurizer.featurize((img, txt))
+            batch_data = {
+                "uid": uids,
+                "grads": [row.astype("float16") for row in grads.cpu().numpy()],
+                "loss_grads": loss_grads.cpu().numpy().astype("float32"),
+            }
+            print(batch_data)
+            batch_table = pa.Table.from_pydict(batch_data, schema=schema)
+            accumulated_tables.append(batch_table)
+
+            # Write accumulated data at intervals
+            if (batch_idx + 1) % write_interval == 0:
+                if len(accumulated_tables) > 0:
+                    combined_table = pa.concat_tables(accumulated_tables)
+                    combined_table = combined_table.replace_schema_metadata(metadata)
+
+                    output_path = f"{output_base_path}/{partition_base_name}_{current_partition}_{uuid.uuid4()}.parquet"
+                    pq.write_table(combined_table, output_path)
+                    print(
+                        f"Wrote partition {output_path} with {len(accumulated_tables)} batches"
+                    )
+
+                    current_partition += 1
+                    accumulated_tables = []
+
+        # Write any remaining data
+        if len(accumulated_tables) > 0:
+            combined_table = pa.concat_tables(accumulated_tables)
+            combined_table = combined_table.replace_schema_metadata(metadata)
+
+            output_path = f"{output_base_path}/{partition_base_name}_{current_partition}_final_{uuid.uuid4()}.parquet"
+            pq.write_table(combined_table, output_path)
+            print(
+                f"Wrote final partition {output_path} with {len(accumulated_tables)} batches"
+            )
+
+
+def get_worker_assignments(
+    encoders: List[EncoderConfig],
+    worker_id: int,
+    worker_total: int,
+) -> List[dict]:
+    """Get all encoders that would be processed by this worker.
+
+    Returns:
+        List of dicts containing assignment details
+    """
+    assignments = []
+    for i, encoder_cfg in enumerate(encoders):
+        assignments.append(
+            {
+                "encoder_id": i,
+                "encoder_name": encoder_cfg.name,
+                "subworker_id": worker_id,
+                "subworker_total": worker_total,
+            }
+        )
+    print(f"Worker {worker_id} got {len(assignments)} assignments")
+    return assignments
+
+
+def run_worker(
+    cfg: DictConfig,
+    experiment: ExperimentConfig,
+    dry_run: bool = False,
+) -> Optional[List[dict]]:
+    """Run or simulate worker processing based on configuration.
+
+    Args:
+        dry_run: If True, return assignments instead of processing them
+    """
+    encoders = [
+        encoder
+        for encoder in tqdm(experiment.encoders, desc="Checking if done")
+        if not check_if_done(cfg, experiment, encoder)
+    ]
+    assignments = get_worker_assignments(encoders, cfg.worker_id, cfg.worker_total)
+
+    if dry_run:
+        return assignments
+
+    for assignment in assignments:
+        if "dropped" in assignment:
+            continue
+
+        encoder_cfg = next(
+            e for e in experiment.encoders if e.name == assignment["encoder_name"]
+        )
+        process_combination(
+            cfg=cfg,
+            experiment_cfg=experiment,
+            encoder_cfg=encoder_cfg,
+            subworker_id=assignment["subworker_id"],
+            subworker_total=assignment["subworker_total"],
+        )
+
+
+@hydra.main(version_base=None, config_path="config", config_name="config")
+def main(cfg: DictConfig) -> None:
+    """Main entry point for the application."""
+    setup_logging()
+    from rich.progress import BarColumn, Progress, TextColumn
+
+    log_folder = "log/%A/%j"
+    executor = submitit.AutoExecutor(folder=log_folder)
+    executor.update_parameters(
+        timeout_min=180,
+        # slurm_partition="gpu,a100,r7525,xe8545,tmp",
+        slurm_partition="tmp",
+        slurm_gpus_per_task=1,
+        slurm_additional_parameters={
+            "gpu-bind": "single:1",
+            "exclude": "xe8545-a100-06",
+        },
+        name="grads",
+    )
+    # cfg.experiments = [create_raw_experiments([0, 1, 2, 3, 4, 5, 6, 7, 8])]
+    cfg.experiments = [create_arch_experiments()]
+
+    # Check if this is a dry run
+    dry_run = cfg.get("dry_run", False)
+    if dry_run:
+        for experiment in cfg.experiments:
+            assignments = run_worker(cfg, experiment, dry_run=True)
+            logger = logging.getLogger("results")
+            logger.info(
+                {
+                    "type": "dry_run",
+                    "worker_id": cfg.worker_id,
+                    "worker_total": cfg.worker_total,
+                    "assignments": assignments,
+                }
+            )
+    else:
+        jobs = executor.map_array(lambda exp: run_worker(cfg, exp), cfg.experiments)
+        with Progress(
+            TextColumn("{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        ) as progress:
+            task = progress.add_task("Processing", total=len(jobs))
+            while not all(job.done() for job in jobs):
+                sum_done = sum(job.done() for job in jobs)
+                progress.update(task, completed=sum_done)
+                time.sleep(1)
+
+
+if __name__ == "__main__":
+    register_configs()
+    main()
