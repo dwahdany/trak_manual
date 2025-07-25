@@ -7,6 +7,7 @@ from pprint import pprint
 import numpy as np
 import torch as ch
 import zarr
+from dask import array as da
 from rich.progress import (
     BarColumn,
     Progress,
@@ -16,7 +17,6 @@ from rich.progress import (
 )
 from torch import Tensor
 
-from dask import array as da
 from config.config import (  # noqa
     Config,
     ExperimentConfig,
@@ -270,7 +270,7 @@ def featurize_with_id(cfg, experiment_cfg):
     id_scores = final_scores[train_dataset_size - len(id_indices) :]
     if not DEBUG:
         # Save all scores first
-        store = zarr.open("/raid/pdpl/trak_scores.zarr", mode="a")
+        store = zarr.open(cfg.score_storage, mode="a")
         exp_group = store.require_group(experiment_cfg.name)
         target_group = exp_group.require_group(experiment_cfg.id_dataset_name)
 
@@ -318,7 +318,7 @@ def featurize_no_id(
 
     # Filter out completed targets
     targets = []
-    root = zarr.open("/raid/pdpl/trak_scores.zarr", mode="a")
+    root = zarr.open(cfg.score_storage, mode="a")
     exp_group = root.require_group(experiment_cfg.name)
     for target in all_targets:
         all_done = True
@@ -421,7 +421,7 @@ def featurize_no_id(
     final_scores = {k: (v * avg_out_to_loss).numpy() for k, v in avg_scores.items()}
 
     if not DEBUG:
-        root = zarr.open("/raid/pdpl/trak_scores.zarr", mode="a")
+        root = zarr.open(cfg.score_storage, mode="a")
         exp_group = root.require_group(experiment_cfg.name)
         for target in targets:
             target_group = exp_group.require_group(target)
